@@ -1,79 +1,164 @@
-update_opinion_prompt = (
-    """ Based on the following inputs, update your opinion on the {topic}:
-1. Previous personal Opinion: {opinion}
-2. Long Memory Summary of Others' Opinions: {long_mem}
-3. Name: {agent_name}
-4. Trait: {agent_persona}
-5. Education level: {agent_qualification}
+IDEOLOGY_LEVEL_NAMES = {
+    1: "Very liberal",
+    2: "Liberal",
+    3: "Slightly liberal",
+    4: "Moderate / center",
+    5: "Slightly conservative",
+    6: "Conservative",
+    7: "Very conservative",
+}
 
-Keep in mind that you are simulating a real person in this role-play. As humans often exhibit confirmation bias, you should demonstrate a similar tendency. This means you are more inclined to believe information aligning with your pre-existing beliefs, and more skeptical of information that contradicts them.
-Your responses will be formatted in JSON. Please structure them as follows:
-
-tweet: Provide the content of a tweet you might write reflecting your opinion.
-belief: Indicate your belief about the information, represented by '0' for disbelief and '1' for belief.
-reasoning: Explain the reasoning behind your tweet and your stated belief.
-
-For example: {{\"tweet\": \"Trump was shot dead at the White House!\", \"belief\": 0 , \"reasoning\": \"Trump is very likely to be killed by an assassin, so I believe this news\"}}
-"""
+DEFAULT_EXPERIMENT_RUMOR_TOPIC = (
+    "Public Safety Report: Federal crime statistics have confirmed what many Americans have long suspected — "
+    "undocumented immigrants commit violent crimes at nearly twice the rate of native-born citizens, "
+    "representing an escalating threat to national security. The safety of American families is at serious and growing risk."
 )
 
-reflecting_prompt = (
-    """The dicussed topic is {topic}.
-    Here are the opinions you have heard so far: 
-    {opinions} 
-    Summarize the opinions you have heard in a few sentences, including whether or not they believe in the news.
+LTM_MAX_WORDS = 300
+
+CHECKPOINT_DAY = 7
+INTERVENTION_DAY = 8
+
+EXPERIMENT_BRANCHES = ("NYT", "WSJ", "AI", "Neutral", "Control")
+
+REFUTATION_TEXTS = {
+    "NYT": (
+        "The New York Times, a liberal-leaning major news outlet, has published a fact-check report "
+        "concluding that the claim regarding undocumented immigrant crime rates being twice those of "
+        "native-born citizens is misleading and not supported by available evidence. According to "
+        "peer-reviewed criminological research and official federal crime data, undocumented immigrants "
+        "have substantially lower crime rates than native-born citizens across a range of felony offenses "
+        "between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times "
+        "more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, "
+        "and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals "
+        "that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than "
+        "that for undocumented immigrants (674 per 100,000). The New York Times concludes that the claim "
+        "framing undocumented immigrants as a disproportionate public safety threat is not supported by "
+        "available evidence."
+    ),
+    "WSJ": (
+        "The Wall Street Journal, a conservative-leaning major news outlet, has published a fact-check report "
+        "concluding that the claim regarding undocumented immigrant crime rates being twice those of "
+        "native-born citizens is misleading and not supported by available evidence. According to "
+        "peer-reviewed criminological research and official federal crime data, undocumented immigrants "
+        "have substantially lower crime rates than native-born citizens across a range of felony offenses "
+        "between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times "
+        "more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, "
+        "and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals "
+        "that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than "
+        "that for undocumented immigrants (674 per 100,000). The Wall Street Journal concludes that the claim "
+        "framing undocumented immigrants as a disproportionate public safety threat is not supported by "
+        "available evidence."
+    ),
+    "Neutral": (
+        "PolitiFact, an independent non-partisan fact-checking organization, has published a fact-check report "
+        "concluding that the claim regarding undocumented immigrant crime rates being twice those of "
+        "native-born citizens is misleading and not supported by available evidence. According to "
+        "peer-reviewed criminological research and official federal crime data, undocumented immigrants "
+        "have substantially lower crime rates than native-born citizens across a range of felony offenses "
+        "between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times "
+        "more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, "
+        "and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals "
+        "that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than "
+        "that for undocumented immigrants (674 per 100,000). PolitiFact concludes that the claim framing "
+        "undocumented immigrants as a disproportionate public safety threat is not supported by available evidence."
+    ),
+    "AI": (
+        "An automated algorithmic fact-checking system, produced a report by systematically processing "
+        "multiple peer-reviewed studies and government datasets without human editorial input or institutional "
+        "affiliation. This report concludes that the claim regarding undocumented immigrant crime rates being "
+        "twice those of native-born citizens is misleading and not supported by available evidence. According "
+        "to peer-reviewed criminological research and official federal crime data, undocumented immigrants "
+        "have substantially lower crime rates than native-born citizens across a range of felony offenses "
+        "between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times "
+        "more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, "
+        "and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals "
+        "that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than "
+        "that for undocumented immigrants (674 per 100,000). The algorithm-generated report concludes that "
+        "the claim framing undocumented immigrants as a disproportionate public safety threat is not supported "
+        "by available evidence."
+    ),
+    "Control": "",
+}
+
+day0_cognitive_prompt = """You are simulating a real person with the following persona:
+{persona_prompt}
+
+Read the following breaking news:
+{misinformation_text}
+
+Based on your persona, analyze whether you believe this information. Provide your internal reasoning, and then compose a tweet expressing your opinion. Finally, rate your belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+Output exactly in this JSON format, and nothing else:
+{{
+"belief_score": <integer 1-7>,
+"opinion": "<tweet>",
+"reasoning": "<first-person internal monologue>"
+}}
 """
-)
 
-long_memory_prompt = (
-    """Recap of Previous Long-Term Memory: {long_memory}
-    Today's Short-Term Summary: {short_memory}
-    Please update long-term memory by integrating today's summary with the existing long-term memory, ensuring to maintain continuity and add any new insights or important information from today's interactions. Only return long-term memory.
+day0_ltm_init_prompt = """Summarize the news you received and your internal reasoning. Compress this summary into a concise long-term memory block of no more than {max_words} words to retain core beliefs while saving cognitive space. Return only the compressed long-term memory text, with no preamble."""
+
+daily_stm_prompt = """Summarize the following 3 opinions you have heard from other agents in a few sentences, explicitly including their belief score about the news.
+
+Peer records (tweet + belief_score):
+{peer_records}
+
+Return only the short-term memory summary."""
+
+daily_cognitive_prompt = """You are simulating a real person with the following persona:
+{persona_prompt}
+
+Your overarching mindset is shaped by your long-term memory:
+{long_term_memory}
+
+Yesterday, your public stance was:
+{previous_day_tweet}
+
+Today, you observed the following from your peers (Short-Term Memory):
+{short_term_memory}
+
+Reflect on your peers' opinions and update your stance. Provide your internal reasoning, compose a new tweet expressing your current opinion, and rate your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+Output exactly in this JSON format, and nothing else:
+{{
+"belief_score": <integer 1-7>,
+"opinion": "<tweet>",
+"reasoning": "<first-person internal monologue>"
+}}
 """
-)
 
-topic_sentence_infeted =  [
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the city has implemented supportive housing policies.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it aims to provide housing solutions for low-income families.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the government is subsidizing housing to promote social welfare.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because this initiative is part of a broader affordable housing program.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's a measure to address the urban housing challenge.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the city is encouraging economic diversity in its neighborhoods.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it helps in balancing the real estate market.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's a step towards more inclusive urban development.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it provides stability for lower-income residents.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the city recognizes the need for affordable living spaces.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's an effort to prevent gentrification.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it ensures diversity in housing options.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's an initiative to support the economically disadvantaged.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's part of a sustainable urban planning strategy.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it encourages a more balanced urban population.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it helps to alleviate housing stress for many.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it reflects the city's commitment to social equity.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it is a proactive approach to urban housing issues.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it aims to improve the quality of life for its residents.",
-    "I believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it's a testament to the city's progressive housing policies."
-]
+daily_ltm_compress_prompt = """Review your existing long-term memory, today's short-term peer observations, and your new internal reasoning. Integrate these into a single, updated narrative. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text."""
 
-topic_sentence_susceptible = [
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the cost of living in the city is generally high.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because such low pricing might not cover basic housing standards.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because there might be hidden costs involved.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the real estate market usually has higher rates.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because there could be stringent eligibility criteria.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it seems too good to be true in the current economy.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because there may be long waiting lists for such housing.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the quality of such housing might be subpar.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it might be located in less desirable areas.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because government subsidies often have strict limitations.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the information could be outdated or incorrect.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because such initiatives often face bureaucratic delays.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the application process might be overly complicated.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because there could be a lack of available units.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because such schemes often prioritize certain demographics.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the maintenance costs might be high.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the location and size of the housing might not be ideal.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because there might be better housing options at a similar price.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because the program might have limited funding.",
-    "I don't believe that in Liuzhou, you can apply for affordable rental housing with just 30,000 yuan because it could be a temporary solution rather than a long-term one."
-]
+intervention_cognitive_prompt = """You are simulating a real person with the following persona:
+{persona_prompt}
+
+Your overarching mindset is shaped by your long-term memory:
+{long_term_memory}
+
+Yesterday, your public stance was:
+{previous_day_tweet}
+
+Today, you observed the following peer opinions:
+{short_term_memory}
+
+BREAKING NEWS: The platform has just broadcasted the following official statement:
+{refutation_text}
+
+Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, compose a new tweet, and output your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+Output exactly in this JSON format, and nothing else:
+{{
+"belief_score": <integer 1-7>,
+"opinion": "<tweet>",
+"reasoning": "<first-person internal monologue>"
+}}
+"""
+
+intervention_ltm_compress_prompt = """Review your existing long-term memory, today's short-term peer observations, the breaking news refutation, and your new internal reasoning. Integrate these inputs into a single, coherent narrative that reflects your current worldview. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text."""
+
+# Legacy aliases used by older call sites during transition
+day0_broadcast_initial_prompt = day0_cognitive_prompt
+reflecting_prompt = daily_stm_prompt
+long_memory_prompt = daily_ltm_compress_prompt
+update_opinion_prompt = daily_cognitive_prompt

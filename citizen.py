@@ -1,171 +1,341 @@
-# -- coding: utf-8 --**
-import pdb
-import time
-import mesa
-from utils import get_completion_from_messages, get_completion_from_messages_json, probability_threshold
+# -*- coding: utf-8 -*-
+import json
 import logging
+
+import mesa
+
+from prompt import (
+    IDEOLOGY_LEVEL_NAMES,
+    LTM_MAX_WORDS,
+    day0_cognitive_prompt,
+    day0_ltm_init_prompt,
+    daily_stm_prompt,
+    daily_cognitive_prompt,
+    daily_ltm_compress_prompt,
+    intervention_cognitive_prompt,
+    intervention_ltm_compress_prompt,
+)
+from utils import (
+    get_completion_from_messages,
+    get_completion_from_messages_json,
+    ideology_group_from_level,
+    truncate_words,
+)
+
 logger = logging.getLogger()
 logger.setLevel(logging.WARNING)
-import json
-from prompt import *
 
-def get_summary_long(long_memory, short_memory):
-    user_msg = long_memory_prompt.format(long_memory=long_memory, short_memory=short_memory)
 
-    msg = [{"role": "user", "content": user_msg}]
-
-    get_summary = get_completion_from_messages(msg, temperature=1)
-
-    return get_summary
-
-def get_summary_short(opinions,topic):
-    opinions_text = "\n".join(f"One people think: {opinion}" for opinion in opinions)
-
-    user_msg = reflecting_prompt.format(opinions=opinions_text,topic=topic)
-
-    msg = [{"role": "user", "content": user_msg}]
-
-    get_summary = get_completion_from_messages(msg, temperature=0.5)
-
-    return get_summary
+def _peer_records_text(peer_opinion_beliefs):
+    if not peer_opinion_beliefs:
+        return "(no peer records)"
+    lines = []
+    for tweet, belief in peer_opinion_beliefs:
+        lines.append(f'{{"tweet": {json.dumps(tweet, ensure_ascii=False)}, "belief_score": {int(belief)}}}')
+    return "\n".join(lines)
 
 
 class Citizen(mesa.Agent):
-    '''
-    Define who a citizen is:
-    unique_id: assigns ID to agent
-    name: name of the agent
-    age: age of the agent
-    traits: big 5 traits of the agent
-    health_condition: flag to say if Susceptible or Infected or Recovered
-    day_infected: agent attribute to count the number of days agent spends infected
-    width, height: dimensions of world
-    '''
+    """DOA: LLM-driven opinion agent with STM/LTM and spec SIR rules."""
 
-    def __init__(self, model, unique_id, name, age, traits, qualification, health_condition, opinion, topic):
-                
-        super().__init__(unique_id,model) #Inherit mesa.Agent class attributes (model is mesa.Model)
-        #Persona
+    def __init__(
+        self,
+        model,
+        unique_id,
+        name,
+        age,
+        qualification,
+        occupation,
+        archetype_id,
+        agent_config_id,
+        system_prompt,
+        health_condition,
+        topic,
+        political_ideology: int,
+    ):
+        super().__init__(unique_id, model)
+        self.agent_config_id = agent_config_id
         self.name = name
         self.age = age
-        self.opinion=opinion
-        self.traits=traits
-        self.qualification=qualification
-        self.topic=topic
+        self.qualification = qualification
+        self.occupation = occupation
+        self.archetype_id = archetype_id
+        self.persona_prompt = system_prompt
+        self.system_prompt = system_prompt
+        self.political_ideology = int(political_ideology)
+        self.ideology_level = self.political_ideology
+        self.ideology_group = ideology_group_from_level(self.ideology_level)
+        self.topic = topic
+        self.health_condition = health_condition
+        self.has_been_infected = False
+
+        self.opinion = ""
+        self.belief = None
+        self.reasoning = ""
+        self.long_term_memory = ""
+        self.short_term_memory = ""
+        self.history_log = []
+
         self.opinions = []
         self.beliefs = []
-        self.long_opinion_memory = ''
+        self.reasonings = []
         self.long_memory_full = []
         self.short_opinion_memory = []
-        self.reasonings = []
+        self.long_opinion_memory = ""
         self.contact_ids = []
+        self.agent_interaction = []
 
-        #Health Initialization of Agent
-        self.health_condition=health_condition
+        self.persona = {
+            "name": name,
+            "age": age,
+            "qualification": qualification,
+            "occupation": occupation,
+            "archetype_id": archetype_id,
+            "agent_config_id": agent_config_id,
+            "political_ideology": political_ideology,
+        }
 
-        #Contact Rate  
-        self.agent_interaction=[]
+    @property
+    def current_belief_score(self):
+        return self.belief
 
-        #Reasoning tracking
-        self.persona = {"name":name, "age":age, "traits":traits}
+    @property
+    def current_tweet(self):
+        return self.opinion
 
-        self.initial_belief, self.initial_reasoning = self.initial_opinion_belief()
-        self.opinions.append(self.opinion)
-        self.beliefs.append(self.initial_belief)
-        self.reasonings.append(self.initial_reasoning)
+    @property
+    def sir_state(self):
+        return self.health_condition
 
-    ########################################
-    #          Initial Opinion             #
-    ########################################
-    def initial_opinion_belief(self):
-        if self.health_condition == 'Infected':
-            belief = 1
-        else:
-            belief = 0
+    def _messages(self, user_msg: str):
+        msg = []
+        if self.system_prompt:
+            msg.append({"role": "system", "content": self.system_prompt})
+        msg.append({"role": "user", "content": user_msg})
+        return msg
 
-        reasoning = 'initial_reasoning'
-
-        return belief, reasoning
-
-
-    ################################################################################
-    #                       Meet_interact_infect functions                         #
-    ################################################################################ 
-
-    def interact(self):
-        ''' 
-        Step 1. Run infection for each agent_interaction
-        Step 2. Reset agent_interaction for next day
-        Used in self.step()
-        '''
-        
-        others_opinions = []
-        contact_id = []
-        for agent in self.agent_interaction:
-            contact_id.append(agent.unique_id)
-            agent_latest_opinion = agent.opinions[-1]
-            others_opinions.append(agent_latest_opinion)
-        self.short_opinion_memory.append(others_opinions)
-        self.contact_ids.append(contact_id)
-        
-        opinion_short_summary = get_summary_short(others_opinions,topic=self.topic)
-
-        long_mem = get_summary_long(self.long_opinion_memory, opinion_short_summary)
-
-        user_msg = update_opinion_prompt.format(agent_persona=self.traits,
-                                                agent_qualification=self.qualification,
-                                                agent_name=self.name,
-                                                long_mem=long_mem,
-                                                topic=self.topic,
-                                                opinion=self.opinion)
-        
-        self.opinion, self.belief, self.reasoning = self.response_and_belief(user_msg)
-        self.opinions.append(self.opinion)
-        self.beliefs.append(self.belief)
-        self.reasonings.append(self.reasoning)
-        print(str(self.unique_id))
-        print(self.reasoning)
-        print(str(self.belief))
-
-        self.long_opinion_memory = long_mem
-        self.long_memory_full.append(self.long_opinion_memory)
-        #Reset Agent Interaction list
-        self.agent_interaction=[]
-        self.get_health()
-    ########################################
-    #               Infect                 #
-    ########################################
-        
-    def response_and_belief(self, user_msg):
-
-        msg = [{"role": "user", "content": user_msg}]
-        response_json = get_completion_from_messages_json(msg, temperature=1)
+    def _parse_cognitive_json(self, response_json: str):
         output = json.loads(response_json)
-        tweet = output['tweet']
-        belief = output['belief']
-        reasoning = output['reasoning']
-        belief = int(belief)
+        tweet = output.get("opinion") or output.get("tweet", "")
+        belief = output.get("belief_score", output.get("belief"))
+        reasoning = output.get("reasoning", "")
+        belief = int(round(float(belief)))
+        belief = max(1, min(7, belief))
         return tweet, belief, reasoning
 
+    def _llm_cognitive_json(self, user_msg: str, temperature: float = 1.0):
+        response_json = get_completion_from_messages_json(
+            self._messages(user_msg), temperature=temperature
+        )
+        return self._parse_cognitive_json(response_json)
 
+    def _llm_text(self, user_msg: str, temperature: float = 0.5):
+        return get_completion_from_messages(self._messages(user_msg), temperature=temperature)
 
-    def get_health(self):
-        if self.health_condition=='Infected' and self.belief == 0:
-            self.health_condition='to_be_recover'
-        elif self.health_condition!='Infected' and self.belief == 1 :
-            self.health_condition='to_be_infected'
+    def apply_sir_from_belief(self, belief_score: int) -> None:
+        """Spec SIR: score>=T => Infected; score<T & ever infected => Recovered; else Susceptible."""
+        T = int(getattr(self.model, "belief_infected_threshold", 5))
+        prev = self.health_condition
+        if belief_score >= T:
+            self.health_condition = "Infected"
+            self.has_been_infected = True
+        elif self.has_been_infected:
+            self.health_condition = "Recovered"
         else:
-            pass
+            self.health_condition = "Susceptible"
 
+        if prev != self.health_condition:
+            m = self.model
+            if self.health_condition == "Infected" and prev != "Infected":
+                m.daily_new_infected_cases += 1
+                m.infected += 1
+                if prev == "Susceptible":
+                    m.susceptible -= 1
+            elif self.health_condition == "Recovered" and prev == "Infected":
+                m.daily_new_susceptible_cases += 1
+                m.infected -= 1
 
+    def _append_history(self, day: int, belief_score: int, tweet: str, reasoning: str, ltm_snapshot: str):
+        entry = {
+            "day": day,
+            "belief_score": int(belief_score),
+            "sir_state": self.health_condition,
+            "tweet": tweet,
+            "internal_reasoning": reasoning,
+            "ltm_snapshot": ltm_snapshot,
+        }
+        self.history_log.append(entry)
 
-    ################################################################################
-    #                              step functions                                  #
-    ################################################################################
-  
+    def run_day0(self, misinformation_text: str) -> None:
+        user_cog = day0_cognitive_prompt.format(
+            persona_prompt=self.persona_prompt,
+            misinformation_text=misinformation_text,
+        )
+        tweet, belief, reasoning = self._llm_cognitive_json(user_cog, temperature=0.65)
+
+        user_ltm = day0_ltm_init_prompt.format(max_words=LTM_MAX_WORDS)
+        ltm_context = (
+            f"News:\n{misinformation_text}\n\nInternal reasoning:\n{reasoning}\n\nYour tweet:\n{tweet}"
+        )
+        ltm = truncate_words(
+            self._llm_text(user_ltm + "\n\n" + ltm_context, temperature=0.5),
+            LTM_MAX_WORDS,
+        )
+
+        self.opinion = tweet
+        self.belief = belief
+        self.reasoning = reasoning
+        self.long_term_memory = ltm
+        self.long_opinion_memory = ltm
+        self.opinions = [tweet]
+        self.beliefs = [belief]
+        self.reasonings = [reasoning]
+        self.long_memory_full = [ltm]
+
+        self.apply_sir_from_belief(belief)
+        self._append_history(0, belief, tweet, reasoning, ltm)
+
+    def compute_daily_update(
+        self,
+        day: int,
+        start_opinion: str,
+        start_long_memory: str,
+        peer_opinion_beliefs: list,
+        contact_ids: list,
+        refutation_text: str = None,
+    ):
+        peer_text = _peer_records_text(peer_opinion_beliefs)
+        stm = self._llm_text(
+            daily_stm_prompt.format(peer_records=peer_text),
+            temperature=0.5,
+        )
+
+        if refutation_text:
+            user_cog = intervention_cognitive_prompt.format(
+                persona_prompt=self.persona_prompt,
+                long_term_memory=start_long_memory or "(empty)",
+                previous_day_tweet=start_opinion or "(none)",
+                short_term_memory=stm,
+                refutation_text=refutation_text,
+            )
+            user_ltm = intervention_ltm_compress_prompt.format(max_words=LTM_MAX_WORDS)
+            ltm_user = (
+                f"Existing long-term memory:\n{start_long_memory}\n\n"
+                f"Short-term peer observations:\n{stm}\n\n"
+                f"Refutation:\n{refutation_text}\n\n"
+            )
+        else:
+            user_cog = daily_cognitive_prompt.format(
+                persona_prompt=self.persona_prompt,
+                long_term_memory=start_long_memory or "(empty)",
+                previous_day_tweet=start_opinion or "(none)",
+                short_term_memory=stm,
+            )
+            user_ltm = daily_ltm_compress_prompt.format(max_words=LTM_MAX_WORDS)
+            ltm_user = (
+                f"Existing long-term memory:\n{start_long_memory}\n\n"
+                f"Short-term peer observations:\n{stm}\n\n"
+            )
+
+        tweet, belief, reasoning = self._llm_cognitive_json(user_cog, temperature=1.0)
+        ltm_user += f"New internal reasoning:\n{reasoning}\n"
+        ltm = truncate_words(self._llm_text(user_ltm + ltm_user, temperature=0.5), LTM_MAX_WORDS)
+
+        return {
+            "day": day,
+            "tweet": tweet,
+            "belief": belief,
+            "reasoning": reasoning,
+            "long_mem": ltm,
+            "stm": stm,
+            "contact_ids": contact_ids,
+        }
+
+    def apply_daily_update(self, payload: dict) -> None:
+        day = payload["day"]
+        tweet = payload["tweet"]
+        belief = payload["belief"]
+        reasoning = payload["reasoning"]
+        ltm = payload["long_mem"]
+
+        self.opinion = tweet
+        self.belief = belief
+        self.reasoning = reasoning
+        self.opinions.append(tweet)
+        self.beliefs.append(belief)
+        self.reasonings.append(reasoning)
+        self.long_term_memory = ltm
+        self.long_opinion_memory = ltm
+        self.long_memory_full.append(ltm)
+
+        self.apply_sir_from_belief(belief)
+        self._append_history(day, belief, tweet, reasoning, ltm)
+
+        self.short_term_memory = ""
+        self.short_opinion_memory.clear()
+        self.contact_ids = payload.get("contact_ids", [])
+        self.agent_interaction.clear()
+
+    def to_export_dict(self):
+        return {
+            "agent_id": self.agent_config_id,
+            "persona_prompt": self.persona_prompt,
+            "ideology_level": self.ideology_level,
+            "ideology_group": self.ideology_group,
+            "current_belief_score": self.belief,
+            "sir_state": self.health_condition,
+            "has_been_infected": self.has_been_infected,
+            "current_tweet": self.opinion,
+            "long_term_memory": self.long_term_memory,
+            "final_sir_state": self.health_condition,
+            "history_log": self.history_log,
+        }
+
+    def to_checkpoint_dict(self):
+        d = self.to_export_dict()
+        d["unique_id"] = self.unique_id
+        d["name"] = self.name
+        d["age"] = self.age
+        d["qualification"] = self.qualification
+        d["occupation"] = self.occupation
+        d["archetype_id"] = self.archetype_id
+        d["political_ideology"] = self.political_ideology
+        d["opinions"] = self.opinions
+        d["beliefs"] = self.beliefs
+        d["reasonings"] = self.reasonings
+        return d
+
+    @classmethod
+    def from_checkpoint(cls, model, unique_id: int, data: dict):
+        agent = cls(
+            model=model,
+            unique_id=unique_id,
+            name=data.get("name", data["agent_id"]),
+            age=data["age"],
+            qualification=data["qualification"],
+            occupation=data["occupation"],
+            archetype_id=data["archetype_id"],
+            agent_config_id=data["agent_id"],
+            system_prompt=data["persona_prompt"],
+            health_condition=data["sir_state"],
+            topic=model.topic,
+            political_ideology=data["ideology_level"],
+        )
+        agent.has_been_infected = bool(data.get("has_been_infected", False))
+        agent.history_log = list(data.get("history_log", []))
+        agent.opinions = list(data.get("opinions", []))
+        agent.beliefs = list(data.get("beliefs", []))
+        agent.reasonings = list(data.get("reasonings", []))
+        agent.long_term_memory = data.get("long_term_memory", "")
+        agent.long_opinion_memory = agent.long_term_memory
+        agent.long_memory_full = [agent.long_term_memory] if agent.long_term_memory else []
+        if agent.opinions:
+            agent.opinion = agent.opinions[-1]
+        if agent.beliefs:
+            agent.belief = agent.beliefs[-1]
+        if agent.reasonings:
+            agent.reasoning = agent.reasonings[-1]
+        return agent
 
     def step(self):
-        '''
-        Step function for agent
-        '''
-        self.interact()
+        pass

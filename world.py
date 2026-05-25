@@ -1,208 +1,440 @@
-import mesa
-from citizen import Citizen
-from tqdm import tqdm
-from datetime import datetime, timedelta
-from utils import generate_names,generate_big5_traits, generate_qualifications, factorize, update_day, clear_cache
-import random
+import json
+import os
 import pickle
-from prompt import *
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+
+import mesa
+import numpy as np
+from tqdm import tqdm
+
+from citizen import Citizen
+from prompt import (
+    CHECKPOINT_DAY,
+    DEFAULT_EXPERIMENT_RUMOR_TOPIC,
+    EXPERIMENT_BRANCHES,
+    INTERVENTION_DAY,
+    REFUTATION_TEXTS,
+)
+from utils import (
+    DESIGN_POPULATION_N,
+    EXPERIMENT_RANDOM_CONTACTS_PER_DAY,
+    EXPERIMENT_SIMULATION_DAYS,
+    build_agents_config,
+    clear_cache,
+    get_llm_config,
+    ideology_level_from_name,
+)
 
 # functions for mesa.DataCollector in World class
 def compute_num_susceptible(model):
-    '''
-    Computers number of susceptible agents for data frame
-    '''
     return sum([1 for a in model.schedule.agents if a.health_condition == "Susceptible"])
 
 
 def compute_num_infected(model):
-    '''
-    Computers number of infected agents for data frame
-    '''
     return sum([1 for a in model.schedule.agents if a.health_condition == "Infected"])
 
 
 def compute_num_recovered(model):
-    '''
-    Computers number of recovered agents for data frame
-    '''
     return sum([1 for a in model.schedule.agents if a.health_condition == "Recovered"])
 
 
-def compute_num_on_grid(model):
-    '''
-    Computers number of agents on the grid
-    '''
-    return sum([1 for a in model.schedule.agents if a.location == "grid"])
+def _agents(model):
+    return list(model.schedule.agents)
 
 
-def compute_num_at_home(model):
-    '''
-    Computers number of agents at home
-    '''
-    return sum([1 for a in model.schedule.agents if a.location == "home"])
+def compute_mean_belief_intensity(model):
+    agents = _agents(model)
+    if not agents:
+        return float("nan")
+    return float(np.mean([a.beliefs[-1] for a in agents]))
+
+
+def compute_polarization_index(model):
+    agents = _agents(model)
+    vals = [a.beliefs[-1] for a in agents]
+    if len(vals) < 2:
+        return 0.0
+    return float(np.std(vals))
+
+
+def compute_inter_group_belief_gap(model):
+    liberal = [a.beliefs[-1] for a in _agents(model) if a.political_ideology <= 3]
+    conservative = [a.beliefs[-1] for a in _agents(model) if a.political_ideology >= 5]
+    if not liberal or not conservative:
+        return float("nan")
+    return abs(float(np.mean(liberal)) - float(np.mean(conservative)))
+
+
+def compute_average_attitude_shift(model):
+    agents = _agents(model)
+    if not agents:
+        return float("nan")
+    return float(np.mean([abs(a.beliefs[-1] - a.beliefs[0]) for a in agents]))
+
+
+def compute_mean_daily_abs_belief_change(model):
+    deltas = []
+    for a in _agents(model):
+        if len(a.beliefs) >= 2:
+            deltas.append(abs(a.beliefs[-1] - a.beliefs[-2]))
+    return float(np.mean(deltas)) if deltas else 0.0
+
+
+def compute_rsr(model):
+    T = model.belief_infected_threshold
+    infected0 = [a for a in _agents(model) if a.beliefs and a.beliefs[0] >= T]
+    if not infected0:
+        return float("nan")
+    recovered = [a for a in infected0 if a.beliefs[-1] < T]
+    return len(recovered) / len(infected0)
+
+
+def _agent_belief_intensity(agent):
+    return agent.beliefs[-1] if agent.beliefs else None
+
+
+def _agent_political_ideology(agent):
+    return agent.political_ideology
+
+
+def _agent_rumor_belief_state(agent):
+    return agent.health_condition
+
+
+def _agent_health_label(agent):
+    return agent.health_condition
+
+
+def _agent_age(agent):
+    return agent.age
+
+
+def _agent_education(agent):
+    return agent.qualification
+
+
+def _agent_occupation(agent):
+    return agent.occupation
+
+
+def _agent_config_id(agent):
+    return agent.agent_config_id
 
 
 class World(mesa.Model):
-    '''
-    The world where Citizens exist
-    '''
-    def __init__(self, args, initial_healthy=2, initial_infected=1, contact_rate=5):
-        
-        ########################################
-        #     Intialization of the world       #
-        ########################################
-    
-        #Agent initialization
-        self.initial_healthy=initial_healthy
-        self.initial_infected=initial_infected
-        self.population=initial_healthy+initial_infected
-        self.step_count = args.no_days
-        self.offset = 0 #Offset for checkpoint load
-        self.name = args.name
-        self.topic="The central bank will implement new regulations on large deposits, and all large deposits must present specific proof materials."
+    """AIS: environment controller for 35 DOA agents, 16 days (0–15)."""
 
-        #Important infection variables
+    def __init__(
+        self,
+        args,
+        initial_healthy=35,
+        initial_infected=0,
+        experiment_branch=None,
+        checkpoint_agents=None,
+        run_day0=True,
+    ):
+        self.initial_healthy = initial_healthy
+        self.initial_infected = initial_infected
+        self.population = initial_healthy + initial_infected
+        self.step_count = EXPERIMENT_SIMULATION_DAYS
+        self.offset = 0
+        self.name = args.name
+        self.experiment_branch = experiment_branch
+        self.simulation_day = 0
+        self.topic = getattr(args, "rumor_topic", None) or DEFAULT_EXPERIMENT_RUMOR_TOPIC
+
         self.total_contact_rates = 0
         self.track_contact_rate = [0]
         self.list_new_infected_cases = [0]
         self.list_new_susceptible_cases = [0]
-        self.daily_new_infected_cases = initial_infected
-        self.daily_new_susceptible_cases = initial_healthy
-        self.infected = initial_infected
-        self.susceptible = initial_healthy
+        self.daily_new_infected_cases = 0
+        self.daily_new_susceptible_cases = 0
+        self.infected = 0
+        self.susceptible = 0
         self.current_date = datetime(2020, 3, 3)
-        self.contact_rate= args.contact_rate   
-        self.max_potential_interactions=0
-        #Initialize Schedule
-        self.schedule = mesa.time.RandomActivation(self)  
+        self.contact_rate = EXPERIMENT_RANDOM_CONTACTS_PER_DAY
+        self.belief_infected_threshold = int(getattr(args, "belief_threshold", 5))
 
-        #Initiate data collector
+        self.schedule = mesa.time.RandomActivation(self)
         self.datacollector = mesa.DataCollector(
-            model_reporters={"Susceptible": compute_num_susceptible,
-                            "Infected": compute_num_infected,
-                            "Recovered": compute_num_recovered,
-                            })
-        
+            model_reporters={
+                "Susceptible": compute_num_susceptible,
+                "Infected": compute_num_infected,
+                "Recovered": compute_num_recovered,
+                "MeanBeliefIntensity": compute_mean_belief_intensity,
+                "PolarizationIndex": compute_polarization_index,
+                "InterGroupBeliefGap": compute_inter_group_belief_gap,
+                "AverageAttitudeShift": compute_average_attitude_shift,
+                "MeanDailyAbsBeliefChange": compute_mean_daily_abs_belief_change,
+                "RefutationSuccessRate": compute_rsr,
+            },
+            agent_reporters={
+                "BeliefIntensity": _agent_belief_intensity,
+                "PoliticalIdeology": _agent_political_ideology,
+                "RumorBeliefState": _agent_rumor_belief_state,
+                "HealthState": _agent_health_label,
+                "Age": _agent_age,
+                "Education": _agent_education,
+                "Occupation": _agent_occupation,
+                "AgentConfigID": _agent_config_id,
+            },
+        )
 
-        ########################################
-        #Assigning properties to all 100 agents#
-        ########################################
+        if self.population != DESIGN_POPULATION_N:
+            raise ValueError(
+                f"This experiment uses {DESIGN_POPULATION_N} agents; got {self.population}."
+            )
 
-        #IDs for agents
-        agent_id = 0 
+        if checkpoint_agents is not None:
+            self._init_agents_from_checkpoint(checkpoint_agents)
+            self.simulation_day = CHECKPOINT_DAY
+            self._sync_population_counts()
+        else:
+            self._init_agents_fresh()
+            if run_day0:
+                self._run_day0_broadcast()
+                self.datacollector.collect(self)
+                self._sync_population_counts()
+                self.list_new_infected_cases[0] = self.daily_new_infected_cases
+                self.list_new_susceptible_cases[0] = self.daily_new_susceptible_cases
 
-        #generates list of random names out of the 200 most common names in the US
-        names = generate_names(self.population, self.population*2)
-        traits = generate_big5_traits(self.population)
-        qualifications = generate_qualifications(self.population)
-
-        #for loop to initialize each agents
+    def _init_agents_fresh(self):
+        agent_id = 0
+        personas = build_agents_config()
         for i in range(self.population):
-
-            #Creates healthy agents
-            if i+1<=(self.initial_healthy):
-                health_condition="Susceptible"
-                opinion=random.choice(finance_sentence_susceptible)
-
-            #Creates infected, unhealthy agent(s)
-            else:
-                health_condition = "Infected"
-                opinion=random.choice(finance_sentence_infeted)
-
-
-            #create instances of the Citizen class
-            citizen = Citizen(model=self,
-                              unique_id=agent_id, name=names[i], age=random.randrange(18,65),
-                              traits=traits[i], opinion=opinion,
-                              qualification=qualifications[i],
-                              health_condition=health_condition,
-                              topic=self.topic
-                              )  
-            # add agents to the scheduler
+            p = personas[i]
+            ideology_level = ideology_level_from_name(p["ideology"])
+            citizen = Citizen(
+                model=self,
+                unique_id=agent_id,
+                name=p["agent_id"],
+                age=p["age"],
+                qualification=p["education"],
+                occupation=p["occupation"],
+                archetype_id=p["archetype_id"],
+                agent_config_id=p["agent_id"],
+                system_prompt=p["system_prompt"],
+                health_condition="Susceptible",
+                topic=self.topic,
+                political_ideology=ideology_level,
+            )
             self.schedule.add(citizen)
-            # Updates to new agent ID
-            agent_id += 1 
+            agent_id += 1
 
+    def _init_agents_from_checkpoint(self, checkpoint_agents):
+        for i, data in enumerate(checkpoint_agents):
+            citizen = Citizen.from_checkpoint(self, unique_id=i, data=data)
+            self.schedule.add(citizen)
+
+    def _llm_parallel_workers(self) -> int:
+        return max(1, int(get_llm_config().get("max_workers", 1)))
+
+    def _parallel_for_agents(self, agents, fn, label: str = ""):
+        """
+        Run fn(agent) over agents with a thread pool (LLM calls are I/O-bound).
+        Snapshot / apply barrier is unchanged — only per-agent compute is parallel.
+        """
+        agents = list(agents)
+        workers = min(self._llm_parallel_workers(), len(agents))
+        if workers <= 1:
+            for a in agents:
+                fn(a)
+            return
+
+        if label:
+            print(f"  LLM parallel: {label} ({len(agents)} agents, {workers} workers)")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fn, a): a for a in agents}
+            for fut in as_completed(futures):
+                fut.result()
+
+    def _run_day0_broadcast(self):
+        agents = sorted(self.schedule.agents, key=lambda a: a.unique_id)
+        topic = self.topic
+
+        def _run(a):
+            a.run_day0(topic)
+
+        self._parallel_for_agents(agents, _run, label="Day 0 broadcast")
+
+    def _sync_population_counts(self):
+        self.susceptible = sum(
+            1 for a in self.schedule.agents if a.health_condition == "Susceptible"
+        )
+        self.infected = sum(1 for a in self.schedule.agents if a.health_condition == "Infected")
+        self.initial_healthy = self.susceptible
+        self.initial_infected = self.infected
 
     def decide_agent_interactions(self):
-        '''
-        Decides interaction partners for each agent
-        '''
-        self.max_potential_interactions = self.contact_rate
+        k = min(self.contact_rate, max(0, len(self.schedule.agents) - 1))
         for agent in self.schedule.agents:
-            potential_interactions = [a for a in self.schedule.agents if a is not agent]  
-            random.shuffle(potential_interactions) 
-            potential_interactions=potential_interactions[:self.max_potential_interactions]  
-            for other_agent in potential_interactions:
-                agent.agent_interaction.append(other_agent)    
+            agent.agent_interaction.clear()
+        for agent in self.schedule.agents:
+            others = [a for a in self.schedule.agents if a is not agent]
+            if not others:
+                continue
+            take = min(k, len(others))
+            agent.agent_interaction.extend(random.sample(others, k=take))
 
-    def step(self):
-        '''
-        Model time step
-        '''
-        
-        self.decide_agent_interactions()  
-       
-        for agent in self.schedule.agents: #track global contact rate
+    def _take_eod_snapshot(self):
+        """Snapshot public state at start of day t (= end of day t-1)."""
+        snapshot = {}
+        for a in self.schedule.agents:
+            if not a.opinions or not a.beliefs:
+                raise ValueError(f"Agent {a.unique_id} missing opinions/beliefs for snapshot.")
+            snapshot[a.unique_id] = {
+                "opinion": a.opinions[-1],
+                "belief": a.beliefs[-1],
+                "long_memory": a.long_term_memory or "",
+            }
+        return snapshot
+
+    def _is_intervention_day(self, day: int) -> bool:
+        return (
+            day == INTERVENTION_DAY
+            and self.experiment_branch
+            and self.experiment_branch != "Control"
+        )
+
+    def step_day(self, day: int):
+        self.simulation_day = day
+        self.decide_agent_interactions()
+
+        for agent in self.schedule.agents:
             self.total_contact_rates += len(agent.agent_interaction)
         self.track_contact_rate.append(self.total_contact_rates)
         self.total_contact_rates = 0
 
-        # call the step function of every agent
-        self.schedule.step()
+        snapshot = self._take_eod_snapshot()
+        refutation = None
+        if self._is_intervention_day(day):
+            refutation = REFUTATION_TEXTS.get(self.experiment_branch, "")
 
-        #Update day of each agent
-        for agent in self.schedule.agents:
-            update_day(agent)
+        agents = list(self.schedule.agents)
 
+        def _compute(a):
+            contact_ids = [p.unique_id for p in a.agent_interaction]
+            peer_opinion_beliefs = [
+                (snapshot[p.unique_id]["opinion"], snapshot[p.unique_id]["belief"])
+                for p in a.agent_interaction
+            ]
+            s = snapshot[a.unique_id]
+            payload = a.compute_daily_update(
+                day=day,
+                start_opinion=s["opinion"],
+                start_long_memory=s["long_memory"],
+                peer_opinion_beliefs=peer_opinion_beliefs,
+                contact_ids=contact_ids,
+                refutation_text=refutation,
+            )
+            return a, payload
 
-    #Function to actually run the model
-    def run_model(self, checkpoint_path, offset=0):
+        workers = min(self._llm_parallel_workers(), len(agents))
+        pending = []
+        if workers <= 1:
+            for a in agents:
+                pending.append(_compute(a))
+        else:
+            print(f"  LLM parallel: Day {day} ({len(agents)} agents, {workers} workers)")
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_compute, a) for a in agents]
+                for fut in as_completed(futures):
+                    pending.append(fut.result())
+
+        for a, payload in pending:
+            a.apply_daily_update(payload)
+
+    def export_checkpoint_day7(self, path: str):
+        payload = {
+            "checkpoint_day": CHECKPOINT_DAY,
+            "misinformation_text": self.topic,
+            "agents": [
+                a.to_checkpoint_dict()
+                for a in sorted(self.schedule.agents, key=lambda x: x.unique_id)
+            ],
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        return path
+
+    @classmethod
+    def from_checkpoint_day7(cls, args, json_path: str, experiment_branch: str):
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        topic = data.get("misinformation_text") or getattr(args, "rumor_topic", None) or DEFAULT_EXPERIMENT_RUMOR_TOPIC
+        if not getattr(args, "rumor_topic", None):
+            args.rumor_topic = topic
+        world = cls(
+            args,
+            initial_healthy=len(data["agents"]),
+            initial_infected=0,
+            experiment_branch=experiment_branch,
+            checkpoint_agents=data["agents"],
+            run_day0=False,
+        )
+        return world
+
+    def export_results_day15(self, path: str):
+        branch = self.experiment_branch or "Phase1"
+        payload = {
+            "experiment_branch": branch,
+            "simulation_day": self.simulation_day,
+            "misinformation_text": self.topic,
+            "belief_threshold": self.belief_infected_threshold,
+            "agents": [
+                a.to_export_dict()
+                for a in sorted(self.schedule.agents, key=lambda x: x.unique_id)
+            ],
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        return path
+
+    def run_model(self, checkpoint_path, offset=0, export_dir="output", end_day=None):
         self.offset = offset
-        end_program=0
-        for i in tqdm(range(self.offset,self.step_count)):
-            #collect model level data
-            self.datacollector.collect(self)
+        start_day = max(1, offset + 1)
+        end_day = end_day if end_day is not None else EXPERIMENT_SIMULATION_DAYS
 
-            #Model steps
-            self.step()  
-
-            #collect all new cases from one day
-            self.list_new_infected_cases.append(self.daily_new_infected_cases)
-            self.list_new_susceptible_cases.append(self.daily_new_susceptible_cases)
-            #set daily new case to 0 again
+        for day in tqdm(range(start_day, end_day + 1)):
+            self.time = float(day)
             self.daily_new_infected_cases = 0
             self.daily_new_susceptible_cases = 0
 
-            #Print statements
-            print(f"At the end of {self.current_date.date()}")
-            print(f"Total Pop: {self.population}\t New Infected Cases: {self.list_new_infected_cases} \t New Susceptible_Cases: {self.list_new_susceptible_cases}")
-            print (f"Currently Infected: {self.infected}")
+            self.step_day(day)
+            self.datacollector.collect(self)
 
-            """
-            early stopping condition: if there are no more infected agents left, 
-            run for two more time steps, save the model and then end program
-            """
-            if self.infected==0:
-                end_program+=1
-            if end_program == 2:
-                path = checkpoint_path + f"/{self.name}-final_early.pkl"
-                self.save_checkpoint(file_path = path)
-                break
+            self.list_new_infected_cases.append(self.daily_new_infected_cases)
+            self.list_new_susceptible_cases.append(self.daily_new_susceptible_cases)
+
+            print(f"Day {day} ({self.current_date.date()}) branch={self.experiment_branch}")
+            print(f"  Infected={self.infected} Susceptible={self.susceptible}")
+
+            if day == CHECKPOINT_DAY and not self.experiment_branch:
+                ckpt = os.path.join(export_dir, "checkpoint_day7.json")
+                self.export_checkpoint_day7(ckpt)
+                print(f"  Saved {ckpt}")
+
+            if day == EXPERIMENT_SIMULATION_DAYS and self.experiment_branch:
+                fname = f"results_{self.experiment_branch}_Day15.json"
+                out = os.path.join(export_dir, fname)
+                self.export_results_day15(out)
+                print(f"  Saved {out}")
 
             self.current_date += timedelta(days=1)
-            path = checkpoint_path+f"/{self.name}-{i+1}.pkl"
-            self.save_checkpoint(file_path = path)
+            if checkpoint_path:
+                path = f"{checkpoint_path}/{self.name}-{day}.pkl"
+                self.save_checkpoint(file_path=path)
             clear_cache()
 
-
-    #saves checkpoint to specified file path
     def save_checkpoint(self, file_path):
-        with open(file_path,"wb") as file:
+        with open(file_path, "wb") as file:
             pickle.dump(self, file)
-    
+
     @staticmethod
     def load_checkpoint(file_path):
-        with open(file_path,"rb") as file:
+        with open(file_path, "rb") as file:
             return pickle.load(file)

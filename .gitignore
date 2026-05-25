@@ -1,0 +1,92 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+*.pem
+secrets.json
+
+# --- Simulation outputs (regenerable) ---
+output/
+checkpoint/
+*.pkl
+*.pickle
+
+# --- Logs & profiling ---
+*.log
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.prof
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Package / type check caches ---
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# --- Local docs / large binaries (optional thesis assets) ---
+# Uncomment if you do not want PDFs in the repo:
+# *.pdf
+
+# --- Hugging Face / model weights (if downloaded into project dir) ---
+models/
+*.gguf
+*.safetensors
