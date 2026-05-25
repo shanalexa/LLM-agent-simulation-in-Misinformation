@@ -5,6 +5,7 @@ import os
 import pandas as pd
 from matplotlib import pyplot as plt
 
+from config import get_config, get_config_path, init_config
 from prompt import CHECKPOINT_DAY, EXPERIMENT_BRANCHES
 from utils import (
     AGENTS_CONFIG_PATH,
@@ -15,82 +16,96 @@ from utils import (
 )
 from world import World
 
-if __name__ == "__main__":
+
+def _build_parser(cfg):
     parser = argparse.ArgumentParser(
         description="AIS/DOA misinformation simulation: Day 0–7 baseline, Day 8 five branches, Day 9–15 diffusion."
     )
-    parser.add_argument("--name", default="GABM", help="Run label for checkpoints and CSV exports.")
-    parser.add_argument("--no_init_healthy", default=35, type=int, help="Agent count (must be 35).")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("MGS_CONFIG", "config.yaml"),
+        help="Path to config.yaml (experiment, texts, prompts, LLM defaults).",
+    )
+    parser.add_argument("--name", default=cfg.run.default_name, help="Run label for checkpoints and CSV exports.")
+    parser.add_argument(
+        "--no_init_healthy",
+        default=cfg.run.default_population,
+        type=int,
+        help="Agent count (must match experiment.population_n in config).",
+    )
     parser.add_argument("--no_init_infect", default=0, type=int, help="Deprecated; Day 0 uses LLM + threshold.")
     parser.add_argument("--no_of_runs", default=1, type=int, help="Number of independent run folders.")
     parser.add_argument("--offset", default=0, type=int, help="Resume daily steps from this day index (1–15).")
     parser.add_argument("--load_from_run", default=0, type=int, help="Run folder index for pickle resume.")
-    parser.add_argument("--belief_threshold", default=5, type=int, help="Belief >= T => Infected.")
-    parser.add_argument("--rumor_topic", default=None, type=str, help="Misinformation text (Day 0 broadcast).")
+    parser.add_argument(
+        "--belief_threshold",
+        default=cfg.experiment.belief_threshold,
+        type=int,
+        help="Belief >= T => Infected (overrides config experiment.belief_threshold).",
+    )
+    parser.add_argument("--rumor_topic", default=None, type=str, help="Misinformation text (overrides config texts).")
     parser.add_argument(
         "--phase",
         choices=["full", "phase1", "phase2", "branch"],
-        default="full",
+        default=cfg.run.default_phase,
         help="full=Day0–7 then 5 branches; phase1=Day0–7 only; phase2=all branches from checkpoint; branch=one branch.",
     )
     parser.add_argument(
         "--branch",
         choices=list(EXPERIMENT_BRANCHES),
-        default="NYT",
-        help="Intervention branch for phase2/branch (NYT, WSJ, AI, Neutral, Control).",
+        default=cfg.run.default_branch,
+        help="Intervention branch for phase2/branch.",
     )
     parser.add_argument(
         "--checkpoint_day7",
-        default="output/checkpoint_day7.json",
+        default=cfg.paths.checkpoint_day7,
         help="Path to Day 7 JSON checkpoint for phase2.",
     )
-    parser.add_argument(
-        "--llm_model",
-        default=None,
-        help="Chat model name (default: env LLM_MODEL or gpt-3.5-turbo).",
-    )
-    parser.add_argument(
-        "--llm_base_url",
-        default=None,
-        help="OpenAI-compatible API base URL (default: env OPENAI_BASE_URL).",
-    )
-    parser.add_argument(
-        "--llm_api_key",
-        default=None,
-        help="API key (default: env OPENAI_API_KEY; local Ollama often uses 'ollama').",
-    )
+    parser.add_argument("--llm_model", default=None, help="Override config llm.model / env LLM_MODEL.")
+    parser.add_argument("--vllm_api_base", default=None, help="Override env VLLM_API_BASE.")
+    parser.add_argument("--llm_api_key", default=None, help="Override config / env OPENAI_API_KEY.")
     parser.add_argument(
         "--no_json_mode",
         action="store_true",
-        help="Disable response_format json_object; parse JSON from plain text instead.",
+        help="Force disable JSON response_format (overrides config llm.use_json_mode).",
     )
+    parser.add_argument("--llm_workers", type=int, default=None, help="Override config / env LLM_MAX_WORKERS.")
+    parser.add_argument("--llm_max_tokens", type=int, default=None, help="Override config / env LLM_MAX_TOKENS.")
     parser.add_argument(
-        "--llm_workers",
-        type=int,
-        default=None,
-        help="Parallel LLM threads per day step (default: env LLM_MAX_WORKERS or 8; use 1 for serial).",
+        "--no_daily_pickle",
+        action="store_true",
+        help="Skip daily .pkl checkpoints (overrides config world.save_daily_pickle).",
     )
-    parser.add_argument(
-        "--llm_max_tokens",
-        type=int,
-        default=None,
-        help="Max tokens per completion (default: env LLM_MAX_TOKENS or 2048).",
-    )
+    return parser
+
+
+if __name__ == "__main__":
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=os.environ.get("MGS_CONFIG", "config.yaml"))
+    pre_args, _ = pre.parse_known_args()
+    init_config(pre_args.config)
+    cfg = get_config()
+
+    parser = _build_parser(cfg)
     args = parser.parse_args()
 
+    if args.no_daily_pickle:
+        cfg.world.save_daily_pickle = False
+
     configure_llm(
-        base_url=args.llm_base_url,
+        base_url=args.vllm_api_base or os.getenv("VLLM_API_BASE"),
         api_key=args.llm_api_key,
         model=args.llm_model,
-        use_json_mode=not args.no_json_mode,
+        use_json_mode=False if args.no_json_mode else cfg.llm.use_json_mode,
         max_workers=args.llm_workers,
         max_tokens=args.llm_max_tokens,
     )
+    print(f"Config: {get_config_path()}")
     print(f"Parameters: {args}")
     print(f"LLM: {get_llm_config()}")
 
-    os.makedirs("output", exist_ok=True)
-    os.makedirs("checkpoint", exist_ok=True)
+    os.makedirs(cfg.paths.output_dir, exist_ok=True)
+    os.makedirs(cfg.paths.checkpoint_dir, exist_ok=True)
     export_agents_config(AGENTS_CONFIG_PATH)
 
     def run_branch(world, checkpoint_path, output_path, offset=0, end_day=None):
@@ -108,13 +123,13 @@ if __name__ == "__main__":
 
     for i in range(args.load_from_run, args.no_of_runs):
         print(f"--------Run - {i + 1}---------")
-        checkpoint_path = f"checkpoint/run-{i + 1}"
-        output_path = f"output/run-{i + 1}"
+        checkpoint_path = f"{cfg.paths.checkpoint_dir}/run-{i + 1}"
+        output_path = f"{cfg.paths.output_dir}/run-{i + 1}"
         os.makedirs(checkpoint_path, exist_ok=True)
         os.makedirs(output_path, exist_ok=True)
 
         ckpt_day7 = os.path.join(output_path, "checkpoint_day7.json")
-        if args.checkpoint_day7 and os.path.isabs(args.checkpoint_day7) is False:
+        if args.checkpoint_day7 and not os.path.isabs(args.checkpoint_day7):
             if not os.path.exists(args.checkpoint_day7) and os.path.exists(ckpt_day7):
                 args.checkpoint_day7 = ckpt_day7
 
@@ -138,7 +153,7 @@ if __name__ == "__main__":
             continue
 
         if args.load_from_run != 0:
-            checkpoint_file = f"checkpoint/run-{args.load_from_run + 1}/{args.name}-{args.offset}.pkl"
+            checkpoint_file = f"{cfg.paths.checkpoint_dir}/run-{args.load_from_run + 1}/{args.name}-{args.offset}.pkl"
             if os.path.exists(checkpoint_file):
                 model = World.load_checkpoint(checkpoint_file)
             else:
@@ -170,7 +185,7 @@ if __name__ == "__main__":
 
         if args.phase == "full":
             if not os.path.exists(ckpt_day7):
-                src = os.path.join("output", "checkpoint_day7.json")
+                src = os.path.join(cfg.paths.output_dir, "checkpoint_day7.json")
                 if os.path.exists(src):
                     ckpt_day7 = src
                 elif os.path.exists(os.path.join(output_path, "checkpoint_day7.json")):

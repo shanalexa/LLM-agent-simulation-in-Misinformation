@@ -4,6 +4,7 @@ import logging
 
 import mesa
 
+from config import get_config
 from prompt import (
     IDEOLOGY_LEVEL_NAMES,
     LTM_MAX_WORDS,
@@ -119,8 +120,9 @@ class Citizen(mesa.Agent):
         tweet = output.get("opinion") or output.get("tweet", "")
         belief = output.get("belief_score", output.get("belief"))
         reasoning = output.get("reasoning", "")
+        exp = get_config().experiment
         belief = int(round(float(belief)))
-        belief = max(1, min(7, belief))
+        belief = max(exp.belief_min, min(exp.belief_max, belief))
         return tweet, belief, reasoning
 
     def _llm_cognitive_json(self, user_msg: str, temperature: float = 1.0):
@@ -171,14 +173,17 @@ class Citizen(mesa.Agent):
             persona_prompt=self.persona_prompt,
             misinformation_text=misinformation_text,
         )
-        tweet, belief, reasoning = self._llm_cognitive_json(user_cog, temperature=0.65)
+        llm = get_config().llm
+        tweet, belief, reasoning = self._llm_cognitive_json(
+            user_cog, temperature=llm.temperature_day0_cognitive
+        )
 
         user_ltm = day0_ltm_init_prompt.format(max_words=LTM_MAX_WORDS)
         ltm_context = (
             f"News:\n{misinformation_text}\n\nInternal reasoning:\n{reasoning}\n\nYour tweet:\n{tweet}"
         )
         ltm = truncate_words(
-            self._llm_text(user_ltm + "\n\n" + ltm_context, temperature=0.5),
+            self._llm_text(user_ltm + "\n\n" + ltm_context, temperature=llm.temperature_ltm),
             LTM_MAX_WORDS,
         )
 
@@ -204,10 +209,11 @@ class Citizen(mesa.Agent):
         contact_ids: list,
         refutation_text: str = None,
     ):
+        llm = get_config().llm
         peer_text = _peer_records_text(peer_opinion_beliefs)
         stm = self._llm_text(
             daily_stm_prompt.format(peer_records=peer_text),
-            temperature=0.5,
+            temperature=llm.temperature_stm,
         )
 
         if refutation_text:
@@ -237,9 +243,14 @@ class Citizen(mesa.Agent):
                 f"Short-term peer observations:\n{stm}\n\n"
             )
 
-        tweet, belief, reasoning = self._llm_cognitive_json(user_cog, temperature=1.0)
+        tweet, belief, reasoning = self._llm_cognitive_json(
+            user_cog, temperature=llm.temperature_daily_cognitive
+        )
         ltm_user += f"New internal reasoning:\n{reasoning}\n"
-        ltm = truncate_words(self._llm_text(user_ltm + ltm_user, temperature=0.5), LTM_MAX_WORDS)
+        ltm = truncate_words(
+            self._llm_text(user_ltm + ltm_user, temperature=llm.temperature_ltm),
+            LTM_MAX_WORDS,
+        )
 
         return {
             "day": day,

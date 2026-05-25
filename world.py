@@ -60,8 +60,13 @@ def compute_polarization_index(model):
 
 
 def compute_inter_group_belief_gap(model):
-    liberal = [a.beliefs[-1] for a in _agents(model) if a.political_ideology <= 3]
-    conservative = [a.beliefs[-1] for a in _agents(model) if a.political_ideology >= 5]
+    from config import get_config
+
+    e = get_config().experiment
+    liberal = [a.beliefs[-1] for a in _agents(model) if a.political_ideology <= e.ibg_liberal_max]
+    conservative = [
+        a.beliefs[-1] for a in _agents(model) if a.political_ideology >= e.ibg_conservative_min
+    ]
     if not liberal or not conservative:
         return float("nan")
     return abs(float(np.mean(liberal)) - float(np.mean(conservative)))
@@ -143,8 +148,12 @@ class World(mesa.Model):
         self.name = args.name
         self.experiment_branch = experiment_branch
         self.simulation_day = 0
-        self.topic = getattr(args, "rumor_topic", None) or DEFAULT_EXPERIMENT_RUMOR_TOPIC
+        from config import get_config
 
+        cfg = get_config()
+        self.topic = getattr(args, "rumor_topic", None) or cfg.rumor_text
+
+        y, m, d = (int(x) for x in cfg.world.start_date.split("-"))
         self.total_contact_rates = 0
         self.track_contact_rate = [0]
         self.list_new_infected_cases = [0]
@@ -153,7 +162,7 @@ class World(mesa.Model):
         self.daily_new_susceptible_cases = 0
         self.infected = 0
         self.susceptible = 0
-        self.current_date = datetime(2020, 3, 3)
+        self.current_date = datetime(y, m, d)
         self.contact_rate = EXPERIMENT_RANDOM_CONTACTS_PER_DAY
         self.belief_infected_threshold = int(getattr(args, "belief_threshold", 5))
 
@@ -292,10 +301,13 @@ class World(mesa.Model):
         return snapshot
 
     def _is_intervention_day(self, day: int) -> bool:
+        from config import get_config
+
+        control = get_config().experiment.control_branch
         return (
             day == INTERVENTION_DAY
             and self.experiment_branch
-            and self.experiment_branch != "Control"
+            and self.experiment_branch != control
         )
 
     def step_day(self, day: int):
@@ -364,7 +376,13 @@ class World(mesa.Model):
     def from_checkpoint_day7(cls, args, json_path: str, experiment_branch: str):
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        topic = data.get("misinformation_text") or getattr(args, "rumor_topic", None) or DEFAULT_EXPERIMENT_RUMOR_TOPIC
+        from config import get_config
+
+        topic = (
+            data.get("misinformation_text")
+            or getattr(args, "rumor_topic", None)
+            or get_config().rumor_text
+        )
         if not getattr(args, "rumor_topic", None):
             args.rumor_topic = topic
         world = cls(
@@ -425,7 +443,9 @@ class World(mesa.Model):
                 print(f"  Saved {out}")
 
             self.current_date += timedelta(days=1)
-            if checkpoint_path:
+            from config import get_config
+
+            if checkpoint_path and get_config().world.save_daily_pickle:
                 path = f"{checkpoint_path}/{self.name}-{day}.pkl"
                 self.save_checkpoint(file_path=path)
             clear_cache()

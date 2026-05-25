@@ -15,6 +15,7 @@ GPU_UTIL="${VLLM_GPU_MEMORY_UTILIZATION:-0.92}"
 echo "Starting vLLM: ${MODEL}"
 echo "  served-model-name: ${SERVED_NAME}"
 echo "  port: ${PORT}  tensor-parallel: ${TP}  max-num-seqs: ${MAX_SEQS}"
+echo "  Then set: export VLLM_API_BASE=\"http://<host>:${PORT}/v1\""
 
 exec vllm serve "${MODEL}" \
   --host 0.0.0.0 \

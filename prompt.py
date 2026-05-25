@@ -1,3 +1,6 @@
+# Prompt templates and experiment texts are loaded from config.yaml via config.init_config().
+# Values below are fallbacks before init_config() runs.
+
 IDEOLOGY_LEVEL_NAMES = {
     1: "Very liberal",
     2: "Liberal",

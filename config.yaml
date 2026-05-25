@@ -1,0 +1,178 @@
+experiment:
+  population_n: 35
+  simulation_days: 15
+  checkpoint_day: 7
+  intervention_day: 8
+  contacts_per_day: 3
+  belief_threshold: 5
+  belief_min: 1
+  belief_max: 7
+  ltm_max_words: 300
+  branches:
+  - NYT
+  - WSJ
+  - AI
+  - Neutral
+  - Control
+  liberal_level_max: 3
+  conservative_level_min: 5
+  ibg_liberal_max: 3
+  ibg_conservative_min: 5
+  control_branch: Control
+  agents_per_ideology: 5
+paths:
+  agents_config: agents_config.json
+  personas: personas.yaml
+  output_dir: output
+  checkpoint_dir: checkpoint
+  checkpoint_day7: output/checkpoint_day7.json
+llm:
+  model: gpt-3.5-turbo
+  api_key_fallback: ollama
+  max_retries: 30
+  max_workers: 8
+  max_tokens: 2048
+  use_json_mode: true
+  retry_sleep_base: 0.5
+  retry_sleep_cap: 2.0
+  temperature_day0_cognitive: 0.65
+  temperature_stm: 0.5
+  temperature_ltm: 0.5
+  temperature_daily_cognitive: 1.0
+run:
+  default_name: MGS
+  default_phase: full
+  default_branch: NYT
+  default_population: 35
+  default_belief_threshold: 5
+world:
+  start_date: '2020-03-03'
+  save_daily_pickle: true
+texts:
+  misinformation: 'Public Safety Report: Federal crime statistics have confirmed what many Americans have long suspected — undocumented immigrants commit violent crimes at nearly twice the rate of native-born citizens, representing an escalating threat to national security. The safety of American families is at serious and growing risk.'
+  refutation:
+    NYT: The New York Times, a liberal-leaning major news outlet, has published a fact-check report concluding that the claim regarding undocumented immigrant crime rates being twice those of native-born citizens is misleading and not supported by available evidence. According to peer-reviewed criminological research and official federal crime data, undocumented immigrants have substantially lower crime rates than native-born citizens across a range of felony offenses between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than that for undocumented immigrants (674 per 100,000). The New York Times concludes that the claim framing undocumented immigrants as a
+      disproportionate public safety threat is not supported by available evidence.
+    WSJ: The Wall Street Journal, a conservative-leaning major news outlet, has published a fact-check report concluding that the claim regarding undocumented immigrant crime rates being twice those of native-born citizens is misleading and not supported by available evidence. According to peer-reviewed criminological research and official federal crime data, undocumented immigrants have substantially lower crime rates than native-born citizens across a range of felony offenses between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than that for undocumented immigrants (674 per 100,000). The Wall Street Journal concludes that the claim framing undocumented immigrants
+      as a disproportionate public safety threat is not supported by available evidence.
+    Neutral: PolitiFact, an independent non-partisan fact-checking organization, has published a fact-check report concluding that the claim regarding undocumented immigrant crime rates being twice those of native-born citizens is misleading and not supported by available evidence. According to peer-reviewed criminological research and official federal crime data, undocumented immigrants have substantially lower crime rates than native-born citizens across a range of felony offenses between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than that for undocumented immigrants (674 per 100,000). PolitiFact concludes that the claim framing undocumented immigrants
+      as a disproportionate public safety threat is not supported by available evidence.
+    AI: An automated algorithmic fact-checking system, produced a report by systematically processing multiple peer-reviewed studies and government datasets without human editorial input or institutional affiliation. This report concludes that the claim regarding undocumented immigrant crime rates being twice those of native-born citizens is misleading and not supported by available evidence. According to peer-reviewed criminological research and official federal crime data, undocumented immigrants have substantially lower crime rates than native-born citizens across a range of felony offenses between 2012 and 2018：Relative to undocumented immigrants, U.S.-born citizens are over 2 times more likely to be arrested for violent crimes, 2.5 times more likely to be arrested for drug crimes, and over 4 times more likely to be arrested for property crimes. Recent federal data also reveals that the incarceration rate for native-born citizens (1,195 per 100,000) is significantly higher than that
+      for undocumented immigrants (674 per 100,000). The algorithm-generated report concludes that the claim framing undocumented immigrants as a disproportionate public safety threat is not supported by available evidence.
+    Control: ''
+prompts:
+  day0_cognitive: 'You are simulating a real person with the following persona:
+
+    {persona_prompt}
+
+
+    Read the following breaking news:
+
+    {misinformation_text}
+
+
+    Based on your persona, analyze whether you believe this information. Provide your internal reasoning, and then compose a tweet expressing your opinion. Finally, rate your belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+
+    Output exactly in this JSON format, and nothing else:
+
+    {{
+
+    "belief_score": <integer 1-7>,
+
+    "opinion": "<tweet>",
+
+    "reasoning": "<first-person internal monologue>"
+
+    }}
+
+    '
+  day0_ltm_init: Summarize the news you received and your internal reasoning. Compress this summary into a concise long-term memory block of no more than {max_words} words to retain core beliefs while saving cognitive space. Return only the compressed long-term memory text, with no preamble.
+  daily_stm: 'Summarize the following {contacts_per_day} opinions you have heard from other agents in a few sentences, explicitly including their belief score about the news.
+
+
+    Peer records (tweet + belief_score):
+
+    {peer_records}
+
+
+    Return only the short-term memory summary.'
+  daily_cognitive: 'You are simulating a real person with the following persona:
+
+    {persona_prompt}
+
+
+    Your overarching mindset is shaped by your long-term memory:
+
+    {long_term_memory}
+
+
+    Yesterday, your public stance was:
+
+    {previous_day_tweet}
+
+
+    Today, you observed the following from your peers (Short-Term Memory):
+
+    {short_term_memory}
+
+
+    Reflect on your peers'' opinions and update your stance. Provide your internal reasoning, compose a new tweet expressing your current opinion, and rate your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+
+    Output exactly in this JSON format, and nothing else:
+
+    {{
+
+    "belief_score": <integer 1-7>,
+
+    "opinion": "<tweet>",
+
+    "reasoning": "<first-person internal monologue>"
+
+    }}
+
+    '
+  daily_ltm_compress: Review your existing long-term memory, today's short-term peer observations, and your new internal reasoning. Integrate these into a single, updated narrative. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.
+  intervention_cognitive: 'You are simulating a real person with the following persona:
+
+    {persona_prompt}
+
+
+    Your overarching mindset is shaped by your long-term memory:
+
+    {long_term_memory}
+
+
+    Yesterday, your public stance was:
+
+    {previous_day_tweet}
+
+
+    Today, you observed the following peer opinions:
+
+    {short_term_memory}
+
+
+    BREAKING NEWS: The platform has just broadcasted the following official statement:
+
+    {refutation_text}
+
+
+    Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, compose a new tweet, and output your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+
+    Output exactly in this JSON format, and nothing else:
+
+    {{
+
+    "belief_score": <integer 1-7>,
+
+    "opinion": "<tweet>",
+
+    "reasoning": "<first-person internal monologue>"
+
+    }}
+
+    '
+  intervention_ltm_compress: Review your existing long-term memory, today's short-term peer observations, the breaking news refutation, and your new internal reasoning. Integrate these inputs into a single, coherent narrative that reflects your current worldview. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.

@@ -8,81 +8,17 @@ import importlib
 
 AGENTS_CONFIG_PATH = "agents_config.json"
 
-DEMOGRAPHIC_ARCHETYPES = (
-    {
-        "archetype_id": "A1",
-        "age": 25,
-        "education": "Bachelor's degree",
-        "occupation": "Junior corporate analyst",
-    },
-    {
-        "archetype_id": "A2",
-        "age": 36,
-        "education": "Vocational training",
-        "occupation": "Blue collar tradesperson",
-    },
-    {
-        "archetype_id": "A3",
-        "age": 48,
-        "education": "Master's degree",
-        "occupation": "Senior corporate executive",
-    },
-    {
-        "archetype_id": "A4",
-        "age": 55,
-        "education": "High school diploma",
-        "occupation": "Service industry worker",
-    },
-    {
-        "archetype_id": "A5",
-        "age": 68,
-        "education": "PhD",
-        "occupation": "Professor in university",
-    },
-)
+# Loaded from personas.yaml via config.init_config() -> _sync_utils_module()
+DEMOGRAPHIC_ARCHETYPES: tuple = ()
+IDEOLOGY_PROFILES: tuple = ()
+AGENT_SYSTEM_PROMPT_TEMPLATE: str = ""
 
-IDEOLOGY_PROFILES = (
-    {
-        "ideology": "Very Liberal",
-        "background": "You deeply value systemic equality, social justice, and the dismantling of structural oppression. You prioritize marginalized voices and radical inclusivity. For information, you rely on progressive independent journalism, grassroots activist networks, and academic publications, maintaining a strong skepticism toward corporate-owned mainstream media which you believe often protects the status quo.",
-    },
-    {
-        "ideology": "Liberal",
-        "background": "You deeply value equal opportunity, robust social safety nets, diversity, and environmental protection. You believe in the positive role of government regulation for the public good. You primarily consume established mainstream progressive journalism, high-quality investigative reporting, and fact-checked national dailies, generally trusting institutional expertise and scientific consensus.",
-    },
-    {
-        "ideology": "Slightly Liberal",
-        "background": "You value social tolerance and pragmatic reform, seeking to balance economic growth with social responsibility. You favor evidence-based policies over ideological extremes. You typically stay informed through mainstream centrist-left corporate media, local news outlets, and bipartisan analysis platforms, preferring balanced reporting without highly polarized commentary.",
-    },
-    {
-        "ideology": "Moderate",
-        "background": "You value pragmatism, compromise, and institutional stability, focusing on practical solutions and daily economic realities rather than ideological purity. You find extreme political polarization exhausting. Your media diet consists mostly of non-partisan wire services, financial news, and local community newspapers, actively avoiding heavily slanted political commentary.",
-    },
-    {
-        "ideology": "Slightly Conservative",
-        "background": "You value free markets, individual responsibility, traditional family structures, and fiscal discipline. You prefer gradual societal change over rapid disruption. You get your news mainly from the mainstream business press, centrist-right editorial boards, and local news broadcasts, with a particular focus on economic stability and community safety.",
-    },
-    {
-        "ideology": "Conservative",
-        "background": "You deeply value law and order, constitutional originalism, limited government, and strong border security. You believe in preserving traditional American foundational principles. You heavily consume mainstream conservative broadcast networks, established right-leaning digital publications, and community-based conservative radio, tending to view liberal mainstream media with considerable suspicion.",
-    },
-    {
-        "ideology": "Very Conservative",
-        "background": "You deeply value national sovereignty, strict law enforcement, and the protection of core traditional foundations. You are highly vigilant against bureaucratic overreach and globalist policies. You exclusively trust independent conservative alternative media, populist digital forums, and anti-establishment podcasts. You are profoundly distrustful of mainstream corporate journalism and institutional fact-checkers, viewing them as inherently biased and manipulative.",
-    },
-)
 
-AGENT_SYSTEM_PROMPT_TEMPLATE = """You are a participant in an academic sociological simulation. You must completely immerse yourself in the assigned persona.
-STRICT RULES:
+def _ensure_personas_loaded() -> None:
+    if not DEMOGRAPHIC_ARCHETYPES or not IDEOLOGY_PROFILES or not AGENT_SYSTEM_PROMPT_TEMPLATE:
+        from config import init_config
 
-Act explicitly as the human persona described. Speak in the first person ("I").
-
-NEVER break character. NEVER reference that you are an AI, a language model, or that you are "simulating" a perspective.
-
-Do not provide meta-commentary, objective fact-checking, or AI safety disclaimers. Your output must ONLY contain the subjective thoughts that strictly reflect your personal worldview and perspective of your persona.
-
---- YOUR PERSONA ---
-You are a {age}-year-old {education} graduate currently working as a {occupation}. Politically, you identify as {ideology}. {background}"""
+        init_config()
 
 
 def _agent_id(ideology: str, archetype_id: str) -> str:
@@ -91,6 +27,7 @@ def _agent_id(ideology: str, archetype_id: str) -> str:
 
 def build_agents_config():
     """Build the deterministic 5 demographic archetypes × 7 ideology profiles agent config list."""
+    _ensure_personas_loaded()
     agents = []
     for ideology_profile in IDEOLOGY_PROFILES:
         for archetype in DEMOGRAPHIC_ARCHETYPES:
@@ -120,6 +57,7 @@ def build_agents_config():
 
 def ideology_level_from_name(ideology: str) -> int:
     """Return the 1..7 ideology level for a config ideology label."""
+    _ensure_personas_loaded()
     for idx, profile in enumerate(IDEOLOGY_PROFILES, start=1):
         if profile["ideology"] == ideology:
             return idx
@@ -127,16 +65,23 @@ def ideology_level_from_name(ideology: str) -> int:
 
 
 def ideology_group_from_level(level: int) -> str:
-    """Map 1–7 ideology level to Liberal / Moderate / Conservative."""
+    """Map ideology level to Liberal / Moderate / Conservative (bounds from config.yaml)."""
+    from config import get_config
+
+    e = get_config().experiment
     level = int(level)
-    if level <= 3:
+    if level <= e.liberal_level_max:
         return "Liberal"
-    if level == 4:
+    if level == e.moderate_level:
         return "Moderate"
     return "Conservative"
 
 
-def truncate_words(text: str, max_words: int = 300) -> str:
+def truncate_words(text: str, max_words: int | None = None) -> str:
+    if max_words is None:
+        from config import get_config
+
+        max_words = get_config().experiment.ltm_max_words
     if not text:
         return ""
     words = text.split()
@@ -286,31 +231,6 @@ def generate_names(n: int, s: int, country_alpha2='US'):
     return names
 
 
-def update_day(agent):
-    '''
-    Update day funtion to update day_sick
-    Used in World.step()
-    '''
-    # print("Agent ID: {} Day infected: {}".format(agent.unique_id,agent.day_infected))
-
-
-    #if person is healthy, no reason to update health status
-    if agent.health_condition=="Susceptible" or agent.health_condition=="Infected":
-        return
-
-    if agent.health_condition=="to_be_infected":
-        agent.health_condition="Infected"
-        agent.model.daily_new_infected_cases +=1 #every time new infection occurs in a day, counter is updated
-        agent.model.infected += 1 #Update amount infected at any given time
-        agent.model.susceptible -= 1
-
-    if agent.health_condition=="to_be_recover":
-        agent.health_condition="Recovered"
-        agent.model.daily_new_susceptible_cases +=1 #every time new infection occurs in a day, counter is updated
-        agent.model.infected -= 1 #Update amount infected at any given time
-        agent.model.susceptible += 1
-
-
 def factorize(n):
     '''
     Factorize number for ideal grid dimensions for # of agents
@@ -321,7 +241,7 @@ def factorize(n):
             return (i, n // i)
     return (n, 1)
 
-# LLM settings (override via configure_llm() or env: OPENAI_API_KEY, OPENAI_BASE_URL, LLM_MODEL)
+# LLM settings (API base: env VLLM_API_BASE; also OPENAI_API_KEY, LLM_MODEL)
 _LLM = {
     "base_url": None,
     "api_key": None,
@@ -342,32 +262,32 @@ def configure_llm(
     max_workers=None,
     max_tokens=None,
 ):
-    """Apply CLI/env LLM settings before simulation starts."""
-    if base_url is not None:
-        _LLM["base_url"] = base_url or None
-    if api_key is not None:
-        _LLM["api_key"] = api_key
-    if model is not None:
-        _LLM["model"] = model
-    if use_json_mode is not None:
-        _LLM["use_json_mode"] = use_json_mode
-    if max_retries is not None:
-        _LLM["max_retries"] = max_retries
+    """Apply config.yaml defaults, then CLI/env overrides."""
+    from config import get_config
+
+    c = get_config().llm
+
+    _LLM["base_url"] = base_url if base_url is not None else os.getenv("VLLM_API_BASE")
+    _LLM["api_key"] = (
+        api_key
+        if api_key is not None
+        else os.environ.get("OPENAI_API_KEY") or c.api_key_fallback
+    )
+    _LLM["model"] = model if model is not None else os.environ.get("LLM_MODEL") or c.model
+    _LLM["use_json_mode"] = use_json_mode if use_json_mode is not None else c.use_json_mode
+    _LLM["max_retries"] = max_retries if max_retries is not None else c.max_retries
     if max_workers is not None:
         _LLM["max_workers"] = max(1, int(max_workers))
     elif os.environ.get("LLM_MAX_WORKERS"):
         _LLM["max_workers"] = max(1, int(os.environ["LLM_MAX_WORKERS"]))
+    else:
+        _LLM["max_workers"] = c.max_workers
     if max_tokens is not None:
         _LLM["max_tokens"] = max(64, int(max_tokens))
     elif os.environ.get("LLM_MAX_TOKENS"):
         _LLM["max_tokens"] = max(64, int(os.environ["LLM_MAX_TOKENS"]))
-
-    if _LLM["base_url"] is None:
-        _LLM["base_url"] = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
-    if _LLM["api_key"] is None:
-        _LLM["api_key"] = os.environ.get("OPENAI_API_KEY", "ollama")
-    if _LLM["model"] is None:
-        _LLM["model"] = os.environ.get("LLM_MODEL", "gpt-3.5-turbo")
+    else:
+        _LLM["max_tokens"] = c.max_tokens
 
 
 def get_llm_config():
@@ -446,8 +366,16 @@ def _chat_with_retries(messages, model, temperature, json_mode=False) -> str:
                     return _message_content(response)
                 except Exception as e2:
                     last_err = e2
+            from config import get_config
+
+            llm = get_config().llm
             print(f"LLM error (attempt {attempt + 1}/{_LLM['max_retries']}): {last_err}")
-            time.sleep(min(2.0, 0.5 * (attempt + 1)))
+            time.sleep(
+                min(
+                    llm.retry_sleep_cap,
+                    llm.retry_sleep_base * (attempt + 1),
+                )
+            )
     raise RuntimeError(f"LLM request failed after {_LLM['max_retries']} retries: {last_err}")
 
 
