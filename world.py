@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import mesa
-import numpy as np
 from tqdm import tqdm
 
 from citizen import Citizen
@@ -27,75 +26,7 @@ from utils import (
     ideology_level_from_name,
 )
 
-# functions for mesa.DataCollector in World class
-def compute_num_susceptible(model):
-    return sum([1 for a in model.schedule.agents if a.health_condition == "Susceptible"])
-
-
-def compute_num_infected(model):
-    return sum([1 for a in model.schedule.agents if a.health_condition == "Infected"])
-
-
-def compute_num_recovered(model):
-    return sum([1 for a in model.schedule.agents if a.health_condition == "Recovered"])
-
-
-def _agents(model):
-    return list(model.schedule.agents)
-
-
-def compute_mean_belief_intensity(model):
-    agents = _agents(model)
-    if not agents:
-        return float("nan")
-    return float(np.mean([a.beliefs[-1] for a in agents]))
-
-
-def compute_polarization_index(model):
-    agents = _agents(model)
-    vals = [a.beliefs[-1] for a in agents]
-    if len(vals) < 2:
-        return 0.0
-    return float(np.std(vals))
-
-
-def compute_inter_group_belief_gap(model):
-    from config import get_config
-
-    e = get_config().experiment
-    liberal = [a.beliefs[-1] for a in _agents(model) if a.political_ideology <= e.ibg_liberal_max]
-    conservative = [
-        a.beliefs[-1] for a in _agents(model) if a.political_ideology >= e.ibg_conservative_min
-    ]
-    if not liberal or not conservative:
-        return float("nan")
-    return abs(float(np.mean(liberal)) - float(np.mean(conservative)))
-
-
-def compute_average_attitude_shift(model):
-    agents = _agents(model)
-    if not agents:
-        return float("nan")
-    return float(np.mean([abs(a.beliefs[-1] - a.beliefs[0]) for a in agents]))
-
-
-def compute_mean_daily_abs_belief_change(model):
-    deltas = []
-    for a in _agents(model):
-        if len(a.beliefs) >= 2:
-            deltas.append(abs(a.beliefs[-1] - a.beliefs[-2]))
-    return float(np.mean(deltas)) if deltas else 0.0
-
-
-def compute_rsr(model):
-    T = model.belief_infected_threshold
-    infected0 = [a for a in _agents(model) if a.beliefs and a.beliefs[0] >= T]
-    if not infected0:
-        return float("nan")
-    recovered = [a for a in infected0 if a.beliefs[-1] < T]
-    return len(recovered) / len(infected0)
-
-
+# Agent-level reporters for mesa.DataCollector (analysis metrics computed offline).
 def _agent_belief_intensity(agent):
     return agent.beliefs[-1] if agent.beliefs else None
 
@@ -168,17 +99,6 @@ class World(mesa.Model):
 
         self.schedule = mesa.time.RandomActivation(self)
         self.datacollector = mesa.DataCollector(
-            model_reporters={
-                "Susceptible": compute_num_susceptible,
-                "Infected": compute_num_infected,
-                "Recovered": compute_num_recovered,
-                "MeanBeliefIntensity": compute_mean_belief_intensity,
-                "PolarizationIndex": compute_polarization_index,
-                "InterGroupBeliefGap": compute_inter_group_belief_gap,
-                "AverageAttitudeShift": compute_average_attitude_shift,
-                "MeanDailyAbsBeliefChange": compute_mean_daily_abs_belief_change,
-                "RefutationSuccessRate": compute_rsr,
-            },
             agent_reporters={
                 "BeliefIntensity": _agent_belief_intensity,
                 "PoliticalIdeology": _agent_political_ideology,

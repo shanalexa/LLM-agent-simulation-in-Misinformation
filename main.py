@@ -3,7 +3,6 @@ import json
 import os
 
 import pandas as pd
-from matplotlib import pyplot as plt
 
 from config import get_config, get_config_path, init_config
 from prompt import CHECKPOINT_DAY, EXPERIMENT_BRANCHES
@@ -112,14 +111,12 @@ if __name__ == "__main__":
         world.run_model(
             checkpoint_path, offset=offset, export_dir=output_path, end_day=end_day
         )
-        data = world.datacollector.get_model_vars_dataframe()
-        df = pd.DataFrame(data)
-        if len(df):
-            df.insert(0, "Step", range(len(df)))
+        agent_df = world.datacollector.get_agent_vars_dataframe()
+        if len(agent_df):
             tag = world.experiment_branch or "Phase1"
-            df.to_csv(os.path.join(output_path, f"{args.name}-{tag}-data.csv"))
-            agent_df = world.datacollector.get_agent_vars_dataframe()
-            agent_df.to_csv(os.path.join(output_path, f"{args.name}-{tag}-agents-panel.csv"))
+            out = os.path.join(output_path, f"{args.name}-{tag}-agents-panel.csv")
+            agent_df.to_csv(out)
+            print(f"  Saved {out}")
 
     for i in range(args.load_from_run, args.no_of_runs):
         print(f"--------Run - {i + 1}---------")
@@ -206,16 +203,3 @@ if __name__ == "__main__":
 
         if args.phase != "phase1":
             model.save_checkpoint(file_path=f"{checkpoint_path}/{args.name}-completed.pkl")
-
-            data = model.datacollector.get_model_vars_dataframe()
-            df = pd.DataFrame(data)
-            if len(df):
-                plt.figure(figsize=(10, 6))
-                plt.plot(df.index, df["Susceptible"], label="Susceptible")
-                plt.plot(df.index, df["Infected"], label="Infected")
-                plt.plot(df.index, df["Recovered"], label="Recovered")
-                plt.xlabel("Step")
-                plt.ylabel("# of People")
-                plt.title("SIR (Phase 1)")
-                plt.legend()
-                plt.savefig(f"{output_path}/{args.name}-SIR.png", bbox_inches="tight")

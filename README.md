@@ -138,9 +138,13 @@ python main.py --phase phase1 --llm_workers 8 --no_json_mode
 
 ## Outputs
 
+- `output/run-1/MGS-Phase1-agents-panel.csv` — daily per-agent belief & SIR (Day 0–7)
+- `output/run-1/MGS_{Branch}-agents-panel.csv` — same for each intervention branch (Day 8–15)
 - `output/run-1/checkpoint_day7.json` — Day 7 state (~1–3 MB)
-- `output/run-1/results_{Branch}_Day15.json` — final panels (~2–4 MB each)
+- `output/run-1/results_{Branch}_Day15.json` — final panels with full `history_log` (~2–4 MB each)
 - `checkpoint/run-1/*.pkl` — optional daily snapshots (~0.5–2 GB total if kept)
+
+PI, IBG, RSR, AAS and plots are computed offline from the panel/JSON exports.
 
 ## Notes
 
