@@ -11,48 +11,80 @@ import yaml
 _CONFIG: Optional["AppConfig"] = None
 _CONFIG_PATH: Optional[Path] = None
 
+_EXPERIMENT_REQUIRED = (
+    "population_n",
+    "agents_per_ideology",
+    "simulation_days",
+    "checkpoint_day",
+    "intervention_day",
+    "contacts_per_day",
+    "belief_threshold",
+    "belief_min",
+    "belief_max",
+    "ltm_max_words",
+    "branches",
+    "liberal_level_max",
+    "moderate_level",
+    "conservative_level_min",
+    "ibg_liberal_max",
+    "ibg_conservative_min",
+    "control_branch",
+    "random_seed",
+)
+
+_PROMPT_FIELDS = (
+    "day0_cognitive",
+    "day0_ltm_init",
+    "daily_stm",
+    "daily_cognitive",
+    "daily_ltm_compress",
+    "intervention_cognitive",
+    "intervention_ltm_compress",
+)
+
 
 @dataclass
 class ExperimentConfig:
-    population_n: int = 35
-    agents_per_ideology: int = 5
-    simulation_days: int = 15
-    checkpoint_day: int = 7
-    intervention_day: int = 8
-    contacts_per_day: int = 3
-    belief_threshold: int = 5
-    belief_min: int = 1
-    belief_max: int = 7
-    ltm_max_words: int = 300
-    branches: Tuple[str, ...] = ("NYT", "WSJ", "AI", "Neutral", "Control")
-    liberal_level_max: int = 3
-    moderate_level: int = 4
-    conservative_level_min: int = 5
-    ibg_liberal_max: int = 3
-    ibg_conservative_min: int = 5
-    control_branch: str = "Control"
+    population_n: int
+    agents_per_ideology: int
+    simulation_days: int
+    checkpoint_day: int
+    intervention_day: int
+    contacts_per_day: int
+    belief_threshold: int
+    belief_min: int
+    belief_max: int
+    ltm_max_words: int
+    branches: Tuple[str, ...]
+    liberal_level_max: int
+    moderate_level: int
+    conservative_level_min: int
+    ibg_liberal_max: int
+    ibg_conservative_min: int
+    control_branch: str
+    random_seed: int
 
 
 @dataclass
 class PathsConfig:
-    agents_config: str = "agents_config.json"
-    personas: str = "personas.yaml"
-    output_dir: str = "output"
-    checkpoint_dir: str = "checkpoint"
-    checkpoint_day7: str = "output/checkpoint_day7.json"
+    agents_config: str
+    personas: str
+    prompts: str
+    output_dir: str
+    checkpoint_dir: str
+    checkpoint_day7: str
 
 
 @dataclass
 class PersonasConfig:
-    archetypes: Tuple[dict, ...] = ()
-    ideology_profiles: Tuple[dict, ...] = ()
-    system_prompt_template: str = ""
+    archetypes: Tuple[dict, ...]
+    ideology_profiles: Tuple[dict, ...]
+    system_prompt_template: str
 
 
 @dataclass
 class LLMConfig:
-    model: str = "gpt-3.5-turbo"
-    api_key_fallback: str = "ollama"
+    model: str
     max_retries: int = 30
     max_workers: int = 8
     max_tokens: int = 2048
@@ -82,35 +114,138 @@ class WorldConfig:
 
 @dataclass
 class PromptsConfig:
-    day0_cognitive: str = ""
-    day0_ltm_init: str = ""
-    daily_stm: str = ""
-    daily_cognitive: str = ""
-    daily_ltm_compress: str = ""
-    intervention_cognitive: str = ""
-    intervention_ltm_compress: str = ""
+    day0_cognitive: str
+    day0_ltm_init: str
+    daily_stm: str
+    daily_cognitive: str
+    daily_ltm_compress: str
+    intervention_cognitive: str
+    intervention_ltm_compress: str
 
 
 @dataclass
 class AppConfig:
-    experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
-    paths: PathsConfig = field(default_factory=PathsConfig)
-    personas: PersonasConfig = field(default_factory=PersonasConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
-    run: RunConfig = field(default_factory=RunConfig)
-    world: WorldConfig = field(default_factory=WorldConfig)
-    prompts: PromptsConfig = field(default_factory=PromptsConfig)
-    rumor_text: str = ""
-    refutation_texts: Dict[str, str] = field(default_factory=dict)
+    experiment: ExperimentConfig
+    paths: PathsConfig
+    personas: PersonasConfig
+    llm: LLMConfig
+    run: RunConfig
+    world: WorldConfig
+    prompts: PromptsConfig
+    rumor_text: str
+    refutation_texts: Dict[str, str]
 
 
-def _dc(cls, data: Optional[dict]):
-    if not data:
-        return cls()
-    valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-    if cls is ExperimentConfig and "branches" in valid:
-        valid["branches"] = tuple(valid["branches"])
-    return cls(**valid)
+def _require_section(raw: dict, name: str) -> dict:
+    section = raw.get(name)
+    if not isinstance(section, dict):
+        raise ValueError(f"config.yaml must define a non-empty '{name}' section")
+    return section
+
+
+def _require_keys(data: dict, keys: tuple[str, ...], section: str) -> None:
+    missing = [k for k in keys if k not in data]
+    if missing:
+        raise ValueError(f"config.yaml '{section}' missing required keys: {', '.join(missing)}")
+
+
+def _require_non_empty_str(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"config.yaml '{field}' must be a non-empty string")
+    return value.strip()
+
+
+def _load_experiment(data: dict) -> ExperimentConfig:
+    _require_keys(data, _EXPERIMENT_REQUIRED, "experiment")
+    branches = data["branches"]
+    if not isinstance(branches, list) or not branches:
+        raise ValueError("config.yaml 'experiment.branches' must be a non-empty list")
+    return ExperimentConfig(
+        population_n=int(data["population_n"]),
+        agents_per_ideology=int(data["agents_per_ideology"]),
+        simulation_days=int(data["simulation_days"]),
+        checkpoint_day=int(data["checkpoint_day"]),
+        intervention_day=int(data["intervention_day"]),
+        contacts_per_day=int(data["contacts_per_day"]),
+        belief_threshold=int(data["belief_threshold"]),
+        belief_min=int(data["belief_min"]),
+        belief_max=int(data["belief_max"]),
+        ltm_max_words=int(data["ltm_max_words"]),
+        branches=tuple(str(b) for b in branches),
+        liberal_level_max=int(data["liberal_level_max"]),
+        moderate_level=int(data["moderate_level"]),
+        conservative_level_min=int(data["conservative_level_min"]),
+        ibg_liberal_max=int(data["ibg_liberal_max"]),
+        ibg_conservative_min=int(data["ibg_conservative_min"]),
+        control_branch=str(data["control_branch"]),
+        random_seed=int(data["random_seed"]),
+    )
+
+
+def _load_llm(data: dict) -> LLMConfig:
+    model = _require_non_empty_str(data.get("model"), "llm.model")
+    rest = {k: v for k, v in data.items() if k in LLMConfig.__dataclass_fields__ and k != "model"}
+    return LLMConfig(model=model, **rest)
+
+
+def _load_paths(data: dict) -> PathsConfig:
+    _require_keys(
+        data,
+        ("agents_config", "personas", "prompts", "output_dir", "checkpoint_dir", "checkpoint_day7"),
+        "paths",
+    )
+    return PathsConfig(
+        agents_config=str(data["agents_config"]),
+        personas=str(data["personas"]),
+        prompts=str(data["prompts"]),
+        output_dir=str(data["output_dir"]),
+        checkpoint_dir=str(data["checkpoint_dir"]),
+        checkpoint_day7=str(data["checkpoint_day7"]),
+    )
+
+
+def _load_prompts(data: dict) -> PromptsConfig:
+    _require_keys(data, _PROMPT_FIELDS, "prompts")
+    return PromptsConfig(
+        **{k: _require_non_empty_str(data[k], f"prompts.{k}") for k in _PROMPT_FIELDS}
+    )
+
+
+def _load_prompts_yaml(prompts_path: Path) -> PromptsConfig:
+    if not prompts_path.is_file():
+        raise FileNotFoundError(f"Prompts file not found: {prompts_path}")
+    with open(prompts_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if "prompts" in raw and isinstance(raw["prompts"], dict):
+        raw = raw["prompts"]
+    return _load_prompts(raw)
+
+
+def _validate_config(cfg: AppConfig) -> None:
+    e = cfg.experiment
+    if e.checkpoint_day >= e.intervention_day:
+        raise ValueError(
+            "experiment.checkpoint_day must be less than experiment.intervention_day"
+        )
+    if e.intervention_day > e.simulation_days:
+        raise ValueError("experiment.intervention_day must not exceed experiment.simulation_days")
+    if e.population_n != e.agents_per_ideology * len(cfg.personas.ideology_profiles):
+        raise ValueError(
+            "experiment.population_n must equal agents_per_ideology × len(ideology_profiles) "
+            f"(got {e.population_n}, expected {e.agents_per_ideology * len(cfg.personas.ideology_profiles)})"
+        )
+    for branch in e.branches:
+        if branch not in cfg.refutation_texts:
+            raise ValueError(f"texts.refutation must define branch '{branch}'")
+    if e.control_branch not in e.branches:
+        raise ValueError("experiment.control_branch must appear in experiment.branches")
+
+
+def daily_stm_prompt(cfg: Optional[AppConfig] = None) -> str:
+    c = cfg or get_config()
+    return c.prompts.daily_stm.replace(
+        "{contacts_per_day}", str(c.experiment.contacts_per_day)
+    )
 
 
 def _resolve_config_path(config_path: Path, relative: str) -> Path:
@@ -143,32 +278,29 @@ def _load_yaml(path: Path) -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    exp = _dc(ExperimentConfig, raw.get("experiment"))
-    paths = _dc(PathsConfig, raw.get("paths"))
-    llm = _dc(LLMConfig, raw.get("llm"))
-    run = _dc(RunConfig, raw.get("run"))
-    world = _dc(WorldConfig, raw.get("world"))
-    prompts_raw = raw.get("prompts") or {}
-    prompts = PromptsConfig(
-        day0_cognitive=prompts_raw.get("day0_cognitive", ""),
-        day0_ltm_init=prompts_raw.get("day0_ltm_init", ""),
-        daily_stm=prompts_raw.get("daily_stm", ""),
-        daily_cognitive=prompts_raw.get("daily_cognitive", ""),
-        daily_ltm_compress=prompts_raw.get("daily_ltm_compress", ""),
-        intervention_cognitive=prompts_raw.get("intervention_cognitive", ""),
-        intervention_ltm_compress=prompts_raw.get("intervention_ltm_compress", ""),
-    )
+    exp = _load_experiment(_require_section(raw, "experiment"))
+    paths = _load_paths(_require_section(raw, "paths"))
 
-    texts = raw.get("texts") or {}
-    rumor = (texts.get("misinformation") or "").strip()
-    refutation = texts.get("refutation") or {}
-    if not isinstance(refutation, dict):
-        refutation = {}
+    llm = _load_llm(_require_section(raw, "llm"))
+
+    run_raw = raw.get("run") or {}
+    run = RunConfig(**{k: v for k, v in run_raw.items() if k in RunConfig.__dataclass_fields__})
+
+    world_raw = raw.get("world") or {}
+    world = WorldConfig(**{k: v for k, v in world_raw.items() if k in WorldConfig.__dataclass_fields__})
+
+    texts = _require_section(raw, "texts")
+    rumor = _require_non_empty_str(texts.get("misinformation"), "texts.misinformation")
+    refutation = texts.get("refutation")
+    if not isinstance(refutation, dict) or not refutation:
+        raise ValueError("config.yaml 'texts.refutation' must be a non-empty mapping")
 
     personas_path = _resolve_config_path(path, paths.personas)
     personas = _load_personas_yaml(personas_path)
+    prompts_path = _resolve_config_path(path, paths.prompts)
+    prompts = _load_prompts_yaml(prompts_path)
 
-    return AppConfig(
+    cfg = AppConfig(
         experiment=exp,
         paths=paths,
         personas=personas,
@@ -177,48 +309,10 @@ def _load_yaml(path: Path) -> AppConfig:
         world=world,
         prompts=prompts,
         rumor_text=rumor,
-        refutation_texts={k: (v or "") for k, v in refutation.items()},
+        refutation_texts={k: (v if v is not None else "") for k, v in refutation.items()},
     )
-
-
-def _sync_utils_module(cfg: AppConfig) -> None:
-    import utils as u
-
-    e = cfg.experiment
-    p = cfg.personas
-    u.AGENTS_CONFIG_PATH = cfg.paths.agents_config
-    u.DESIGN_POPULATION_N = e.population_n
-    u.DESIGN_AGENTS_PER_IDEOLOGY_LEVEL = e.agents_per_ideology
-    u.EXPERIMENT_SIMULATION_DAYS = e.simulation_days
-    u.EXPERIMENT_RANDOM_CONTACTS_PER_DAY = e.contacts_per_day
-    u.DEMOGRAPHIC_ARCHETYPES = p.archetypes
-    u.IDEOLOGY_PROFILES = p.ideology_profiles
-    u.AGENT_SYSTEM_PROMPT_TEMPLATE = p.system_prompt_template
-
-
-def _sync_prompt_module(cfg: AppConfig) -> None:
-    import prompt as p
-
-    contacts = cfg.experiment.contacts_per_day
-    p.LTM_MAX_WORDS = cfg.experiment.ltm_max_words
-    p.CHECKPOINT_DAY = cfg.experiment.checkpoint_day
-    p.INTERVENTION_DAY = cfg.experiment.intervention_day
-    p.EXPERIMENT_BRANCHES = tuple(cfg.experiment.branches)
-    p.DEFAULT_EXPERIMENT_RUMOR_TOPIC = cfg.rumor_text
-    p.REFUTATION_TEXTS = dict(cfg.refutation_texts)
-
-    p.day0_cognitive_prompt = cfg.prompts.day0_cognitive
-    p.day0_ltm_init_prompt = cfg.prompts.day0_ltm_init
-    p.daily_stm_prompt = cfg.prompts.daily_stm.replace("{contacts_per_day}", str(contacts))
-    p.daily_cognitive_prompt = cfg.prompts.daily_cognitive
-    p.daily_ltm_compress_prompt = cfg.prompts.daily_ltm_compress
-    p.intervention_cognitive_prompt = cfg.prompts.intervention_cognitive
-    p.intervention_ltm_compress_prompt = cfg.prompts.intervention_ltm_compress
-
-    p.day0_broadcast_initial_prompt = p.day0_cognitive_prompt
-    p.reflecting_prompt = p.daily_stm_prompt
-    p.long_memory_prompt = p.daily_ltm_compress_prompt
-    p.update_opinion_prompt = p.daily_cognitive_prompt
+    _validate_config(cfg)
+    return cfg
 
 
 def init_config(path: str | Path = "config.yaml") -> AppConfig:
@@ -228,16 +322,31 @@ def init_config(path: str | Path = "config.yaml") -> AppConfig:
         raise FileNotFoundError(f"Config not found: {path.resolve()}")
     _CONFIG_PATH = path.resolve()
     _CONFIG = _load_yaml(path)
-    _sync_utils_module(_CONFIG)
-    _sync_prompt_module(_CONFIG)
     return _CONFIG
 
 
 def get_config() -> AppConfig:
     if _CONFIG is None:
-        init_config()
+        raise RuntimeError("Config not loaded. Call init_config(path) before running the simulation.")
     return _CONFIG
 
 
 def get_config_path() -> Optional[Path]:
     return _CONFIG_PATH
+
+
+def _resolve_path(relative: str) -> Path:
+    cfg = get_config()
+    base = get_config_path() or Path("config.yaml")
+    p = Path(relative)
+    if p.is_absolute():
+        return p
+    return (base.parent / p).resolve()
+
+
+def get_personas_path() -> Path:
+    return _resolve_path(get_config().paths.personas)
+
+
+def get_prompts_path() -> Path:
+    return _resolve_path(get_config().paths.prompts)

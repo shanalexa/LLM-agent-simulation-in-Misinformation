@@ -9,17 +9,8 @@ import mesa
 from tqdm import tqdm
 
 from citizen import Citizen
-from prompt import (
-    CHECKPOINT_DAY,
-    DEFAULT_EXPERIMENT_RUMOR_TOPIC,
-    EXPERIMENT_BRANCHES,
-    INTERVENTION_DAY,
-    REFUTATION_TEXTS,
-)
+from config import get_config
 from utils import (
-    DESIGN_POPULATION_N,
-    EXPERIMENT_RANDOM_CONTACTS_PER_DAY,
-    EXPERIMENT_SIMULATION_DAYS,
     build_agents_config,
     clear_cache,
     get_llm_config,
@@ -39,10 +30,6 @@ def _agent_rumor_belief_state(agent):
     return agent.health_condition
 
 
-def _agent_health_label(agent):
-    return agent.health_condition
-
-
 def _agent_age(agent):
     return agent.age
 
@@ -57,6 +44,14 @@ def _agent_occupation(agent):
 
 def _agent_config_id(agent):
     return agent.agent_config_id
+
+
+def _agent_simulation_day(agent):
+    return agent.model.simulation_day
+
+
+def _agent_experiment_branch(agent):
+    return agent.model.experiment_branch or "Phase1"
 
 
 class World(mesa.Model):
@@ -74,14 +69,13 @@ class World(mesa.Model):
         self.initial_healthy = initial_healthy
         self.initial_infected = initial_infected
         self.population = initial_healthy + initial_infected
-        self.step_count = EXPERIMENT_SIMULATION_DAYS
+        cfg = get_config()
+        exp = cfg.experiment
+        self.step_count = exp.simulation_days
         self.offset = 0
         self.name = args.name
         self.experiment_branch = experiment_branch
         self.simulation_day = 0
-        from config import get_config
-
-        cfg = get_config()
         self.topic = getattr(args, "rumor_topic", None) or cfg.rumor_text
 
         y, m, d = (int(x) for x in cfg.world.start_date.split("-"))
@@ -94,16 +88,17 @@ class World(mesa.Model):
         self.infected = 0
         self.susceptible = 0
         self.current_date = datetime(y, m, d)
-        self.contact_rate = EXPERIMENT_RANDOM_CONTACTS_PER_DAY
-        self.belief_infected_threshold = int(getattr(args, "belief_threshold", 5))
+        self.contact_rate = exp.contacts_per_day
+        self.belief_infected_threshold = int(getattr(args, "belief_threshold", exp.belief_threshold))
 
         self.schedule = mesa.time.RandomActivation(self)
         self.datacollector = mesa.DataCollector(
             agent_reporters={
+                "simulation_day": _agent_simulation_day,
+                "experiment_branch": _agent_experiment_branch,
                 "BeliefIntensity": _agent_belief_intensity,
                 "PoliticalIdeology": _agent_political_ideology,
                 "RumorBeliefState": _agent_rumor_belief_state,
-                "HealthState": _agent_health_label,
                 "Age": _agent_age,
                 "Education": _agent_education,
                 "Occupation": _agent_occupation,
@@ -111,14 +106,14 @@ class World(mesa.Model):
             },
         )
 
-        if self.population != DESIGN_POPULATION_N:
+        if self.population != exp.population_n:
             raise ValueError(
-                f"This experiment uses {DESIGN_POPULATION_N} agents; got {self.population}."
+                f"This experiment uses {exp.population_n} agents; got {self.population}."
             )
 
         if checkpoint_agents is not None:
             self._init_agents_from_checkpoint(checkpoint_agents)
-            self.simulation_day = CHECKPOINT_DAY
+            self.simulation_day = exp.checkpoint_day
             self._sync_population_counts()
         else:
             self._init_agents_fresh()
@@ -221,13 +216,11 @@ class World(mesa.Model):
         return snapshot
 
     def _is_intervention_day(self, day: int) -> bool:
-        from config import get_config
-
-        control = get_config().experiment.control_branch
+        exp = get_config().experiment
         return (
-            day == INTERVENTION_DAY
+            day == exp.intervention_day
             and self.experiment_branch
-            and self.experiment_branch != control
+            and self.experiment_branch != exp.control_branch
         )
 
     def step_day(self, day: int):
@@ -242,7 +235,7 @@ class World(mesa.Model):
         snapshot = self._take_eod_snapshot()
         refutation = None
         if self._is_intervention_day(day):
-            refutation = REFUTATION_TEXTS.get(self.experiment_branch, "")
+            refutation = get_config().refutation_texts.get(self.experiment_branch, "")
 
         agents = list(self.schedule.agents)
 
@@ -280,7 +273,7 @@ class World(mesa.Model):
 
     def export_checkpoint_day7(self, path: str):
         payload = {
-            "checkpoint_day": CHECKPOINT_DAY,
+            "checkpoint_day": get_config().experiment.checkpoint_day,
             "misinformation_text": self.topic,
             "agents": [
                 a.to_checkpoint_dict()
@@ -335,7 +328,8 @@ class World(mesa.Model):
     def run_model(self, checkpoint_path, offset=0, export_dir="output", end_day=None):
         self.offset = offset
         start_day = max(1, offset + 1)
-        end_day = end_day if end_day is not None else EXPERIMENT_SIMULATION_DAYS
+        exp = get_config().experiment
+        end_day = end_day if end_day is not None else exp.simulation_days
 
         for day in tqdm(range(start_day, end_day + 1)):
             self.time = float(day)
@@ -351,12 +345,12 @@ class World(mesa.Model):
             print(f"Day {day} ({self.current_date.date()}) branch={self.experiment_branch}")
             print(f"  Infected={self.infected} Susceptible={self.susceptible}")
 
-            if day == CHECKPOINT_DAY and not self.experiment_branch:
+            if day == exp.checkpoint_day and not self.experiment_branch:
                 ckpt = os.path.join(export_dir, "checkpoint_day7.json")
                 self.export_checkpoint_day7(ckpt)
                 print(f"  Saved {ckpt}")
 
-            if day == EXPERIMENT_SIMULATION_DAYS and self.experiment_branch:
+            if day == exp.simulation_days and self.experiment_branch:
                 fname = f"results_{self.experiment_branch}_Day15.json"
                 out = os.path.join(export_dir, fname)
                 self.export_results_day15(out)

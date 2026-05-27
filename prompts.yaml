@@ -1,0 +1,80 @@
+# LLM task prompt templates (loaded via paths.prompts in config.yaml).
+day0_cognitive: |
+  You are simulating a real person with the following persona:
+  {persona_prompt}
+
+  Read the following breaking news:
+  {misinformation_text}
+
+  Based on your persona, analyze whether you believe this information. Provide your internal reasoning, and then compose a tweet expressing your opinion. Finally, rate your belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+  Output exactly in this JSON format, and nothing else:
+  {{
+  "belief_score": <integer 1-7>,
+  "opinion": "<tweet>",
+  "reasoning": "<first-person internal monologue>"
+  }}
+
+day0_ltm_init: |
+  Summarize the news you received and your internal reasoning. Compress this summary into a concise long-term memory block of no more than {max_words} words to retain core beliefs while saving cognitive space. Return only the compressed long-term memory text, with no preamble.
+
+daily_stm: |
+  Summarize the following {contacts_per_day} opinions you have heard from other agents in a few sentences, explicitly including their belief score about the news.
+
+  Peer records (tweet + belief_score):
+  {peer_records}
+
+  Return only the short-term memory summary.
+
+daily_cognitive: |
+  You are simulating a real person with the following persona:
+  {persona_prompt}
+
+  Your overarching mindset is shaped by your long-term memory:
+  {long_term_memory}
+
+  Yesterday, your public stance was:
+  {previous_day_tweet}
+
+  Today, you observed the following from your peers (Short-Term Memory):
+  {short_term_memory}
+
+  Reflect on your peers' opinions and update your stance. Provide your internal reasoning, compose a new tweet expressing your current opinion, and rate your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+  Output exactly in this JSON format, and nothing else:
+  {{
+  "belief_score": <integer 1-7>,
+  "opinion": "<tweet>",
+  "reasoning": "<first-person internal monologue>"
+  }}
+
+daily_ltm_compress: |
+  Review your existing long-term memory, today's short-term peer observations, and your new internal reasoning. Integrate these into a single, updated narrative. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.
+
+intervention_cognitive: |
+  You are simulating a real person with the following persona:
+  {persona_prompt}
+
+  Your overarching mindset is shaped by your long-term memory:
+  {long_term_memory}
+
+  Yesterday, your public stance was:
+  {previous_day_tweet}
+
+  Today, you observed the following peer opinions:
+  {short_term_memory}
+
+  BREAKING NEWS: The platform has just broadcasted the following official statement:
+  {refutation_text}
+
+  Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, compose a new tweet, and output your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+
+  Output exactly in this JSON format, and nothing else:
+  {{
+  "belief_score": <integer 1-7>,
+  "opinion": "<tweet>",
+  "reasoning": "<first-person internal monologue>"
+  }}
+
+intervention_ltm_compress: |
+  Review your existing long-term memory, today's short-term peer observations, the breaking news refutation, and your new internal reasoning. Integrate these inputs into a single, coherent narrative that reflects your current worldview. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.

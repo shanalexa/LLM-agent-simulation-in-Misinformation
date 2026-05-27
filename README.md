@@ -14,7 +14,7 @@ cp .env.example .env   # VLLM_API_BASE and API keys
 
 ## Configuration (`config.yaml`)
 
-Most experiment parameters (days, agent count, SIR threshold, rumor/refutation texts, LLM temperatures, prompts, output paths) live in **`config.yaml`**. Agent personas (5×7 archetypes, ideology backgrounds, `system_prompt` template) live in **`personas.yaml`** (path set by `paths.personas` in config). Edit those files instead of Python constants.
+Most experiment parameters (days, agent count, SIR threshold, rumor/refutation texts, LLM temperatures, output paths) live in **`config.yaml`**. Agent personas (5×7 archetypes, ideology backgrounds, `system_prompt_template`) live in **`personas.yaml`**. LLM task prompt templates live in **`prompts.yaml`**. Paths are set under `paths:` in config. Required keys must be present; missing values raise an error at startup (no silent Python fallbacks for experiment semantics).
 
 ```bash
 # optional: custom config path
@@ -134,10 +134,11 @@ python main.py --phase phase1 --llm_workers 8 --no_json_mode
 | `--phase phase1` | Day 0–7 → `checkpoint_day7.json` |
 | `--phase branch --branch Control` | One branch Day 8–15 |
 | `--phase phase2` | All five branches from checkpoint |
-| `--phase full` | Phase 1 + five branches |
+| `--phase full` | Day 0–7 (baseline), then five branches Day 8–15 (one command) |
 
 ## Outputs
 
+- `output/run-1/run_manifest.json` — reproducibility record (config snapshot, git commit, seed, LLM, timestamps)
 - `output/run-1/MGS-Phase1-agents-panel.csv` — daily per-agent belief & SIR (Day 0–7)
 - `output/run-1/MGS_{Branch}-agents-panel.csv` — same for each intervention branch (Day 8–15)
 - `output/run-1/checkpoint_day7.json` — Day 7 state (~1–3 MB)
@@ -150,4 +151,4 @@ PI, IBG, RSR, AAS and plots are computed offline from the panel/JSON exports.
 
 - `agents_config.json` is regenerated on each run.
 - Local Qwen/vLLM: use **`--no_json_mode`** unless JSON mode is verified.
-- Cloud OpenAI: leave **`VLLM_API_BASE` unset**, set `OPENAI_API_KEY` only.
+- Cloud OpenAI: set **`VLLM_API_BASE=https://api.openai.com/v1`** and **`OPENAI_API_KEY`** (both required).

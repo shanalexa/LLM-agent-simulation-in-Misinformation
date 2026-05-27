@@ -4,18 +4,7 @@ import logging
 
 import mesa
 
-from config import get_config
-from prompt import (
-    IDEOLOGY_LEVEL_NAMES,
-    LTM_MAX_WORDS,
-    day0_cognitive_prompt,
-    day0_ltm_init_prompt,
-    daily_stm_prompt,
-    daily_cognitive_prompt,
-    daily_ltm_compress_prompt,
-    intervention_cognitive_prompt,
-    intervention_ltm_compress_prompt,
-)
+from config import daily_stm_prompt, get_config
 from utils import (
     get_completion_from_messages,
     get_completion_from_messages_json,
@@ -169,22 +158,25 @@ class Citizen(mesa.Agent):
         self.history_log.append(entry)
 
     def run_day0(self, misinformation_text: str) -> None:
-        user_cog = day0_cognitive_prompt.format(
+        cfg = get_config()
+        prompts = cfg.prompts
+        ltm_words = cfg.experiment.ltm_max_words
+        user_cog = prompts.day0_cognitive.format(
             persona_prompt=self.persona_prompt,
             misinformation_text=misinformation_text,
         )
-        llm = get_config().llm
+        llm = cfg.llm
         tweet, belief, reasoning = self._llm_cognitive_json(
             user_cog, temperature=llm.temperature_day0_cognitive
         )
 
-        user_ltm = day0_ltm_init_prompt.format(max_words=LTM_MAX_WORDS)
+        user_ltm = prompts.day0_ltm_init.format(max_words=ltm_words)
         ltm_context = (
             f"News:\n{misinformation_text}\n\nInternal reasoning:\n{reasoning}\n\nYour tweet:\n{tweet}"
         )
         ltm = truncate_words(
             self._llm_text(user_ltm + "\n\n" + ltm_context, temperature=llm.temperature_ltm),
-            LTM_MAX_WORDS,
+            ltm_words,
         )
 
         self.opinion = tweet
@@ -209,35 +201,38 @@ class Citizen(mesa.Agent):
         contact_ids: list,
         refutation_text: str = None,
     ):
-        llm = get_config().llm
+        cfg = get_config()
+        prompts = cfg.prompts
+        ltm_words = cfg.experiment.ltm_max_words
+        llm = cfg.llm
         peer_text = _peer_records_text(peer_opinion_beliefs)
         stm = self._llm_text(
-            daily_stm_prompt.format(peer_records=peer_text),
+            daily_stm_prompt(cfg).format(peer_records=peer_text),
             temperature=llm.temperature_stm,
         )
 
         if refutation_text:
-            user_cog = intervention_cognitive_prompt.format(
+            user_cog = prompts.intervention_cognitive.format(
                 persona_prompt=self.persona_prompt,
                 long_term_memory=start_long_memory or "(empty)",
                 previous_day_tweet=start_opinion or "(none)",
                 short_term_memory=stm,
                 refutation_text=refutation_text,
             )
-            user_ltm = intervention_ltm_compress_prompt.format(max_words=LTM_MAX_WORDS)
+            user_ltm = prompts.intervention_ltm_compress.format(max_words=ltm_words)
             ltm_user = (
                 f"Existing long-term memory:\n{start_long_memory}\n\n"
                 f"Short-term peer observations:\n{stm}\n\n"
                 f"Refutation:\n{refutation_text}\n\n"
             )
         else:
-            user_cog = daily_cognitive_prompt.format(
+            user_cog = prompts.daily_cognitive.format(
                 persona_prompt=self.persona_prompt,
                 long_term_memory=start_long_memory or "(empty)",
                 previous_day_tweet=start_opinion or "(none)",
                 short_term_memory=stm,
             )
-            user_ltm = daily_ltm_compress_prompt.format(max_words=LTM_MAX_WORDS)
+            user_ltm = prompts.daily_ltm_compress.format(max_words=ltm_words)
             ltm_user = (
                 f"Existing long-term memory:\n{start_long_memory}\n\n"
                 f"Short-term peer observations:\n{stm}\n\n"
@@ -249,7 +244,7 @@ class Citizen(mesa.Agent):
         ltm_user += f"New internal reasoning:\n{reasoning}\n"
         ltm = truncate_words(
             self._llm_text(user_ltm + ltm_user, temperature=llm.temperature_ltm),
-            LTM_MAX_WORDS,
+            ltm_words,
         )
 
         return {

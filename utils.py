@@ -6,32 +6,19 @@ import shutil
 import json
 import importlib
 
-AGENTS_CONFIG_PATH = "agents_config.json"
-
-# Loaded from personas.yaml via config.init_config() -> _sync_utils_module()
-DEMOGRAPHIC_ARCHETYPES: tuple = ()
-IDEOLOGY_PROFILES: tuple = ()
-AGENT_SYSTEM_PROMPT_TEMPLATE: str = ""
-
-
-def _ensure_personas_loaded() -> None:
-    if not DEMOGRAPHIC_ARCHETYPES or not IDEOLOGY_PROFILES or not AGENT_SYSTEM_PROMPT_TEMPLATE:
-        from config import init_config
-
-        init_config()
-
-
 def _agent_id(ideology: str, archetype_id: str) -> str:
     return f"{ideology.replace(' ', '_')}_{archetype_id}"
 
 
 def build_agents_config():
     """Build the deterministic 5 demographic archetypes × 7 ideology profiles agent config list."""
-    _ensure_personas_loaded()
+    from config import get_config
+
+    cfg = get_config()
     agents = []
-    for ideology_profile in IDEOLOGY_PROFILES:
-        for archetype in DEMOGRAPHIC_ARCHETYPES:
-            system_prompt = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+    for ideology_profile in cfg.personas.ideology_profiles:
+        for archetype in cfg.personas.archetypes:
+            system_prompt = cfg.personas.system_prompt_template.format(
                 age=archetype["age"],
                 education=archetype["education"],
                 occupation=archetype["occupation"],
@@ -57,8 +44,9 @@ def build_agents_config():
 
 def ideology_level_from_name(ideology: str) -> int:
     """Return the 1..7 ideology level for a config ideology label."""
-    _ensure_personas_loaded()
-    for idx, profile in enumerate(IDEOLOGY_PROFILES, start=1):
+    from config import get_config
+
+    for idx, profile in enumerate(get_config().personas.ideology_profiles, start=1):
         if profile["ideology"] == ideology:
             return idx
     raise ValueError(f"Unknown ideology label: {ideology}")
@@ -90,8 +78,12 @@ def truncate_words(text: str, max_words: int | None = None) -> str:
     return " ".join(words[:max_words])
 
 
-def export_agents_config(output_path: str = AGENTS_CONFIG_PATH):
+def export_agents_config(output_path: str | None = None):
     """Export the 35-agent configuration JSON and return the generated list."""
+    from config import get_config
+
+    if output_path is None:
+        output_path = get_config().paths.agents_config
     agents = build_agents_config()
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(agents, f, indent=2, ensure_ascii=False)
@@ -114,14 +106,6 @@ PERSONA_AGE_BRACKETS = (
     ("Older midlife (46–55)", 46, 55),
     ("Senior (56–65)", 56, 65),
 )
-
-DESIGN_POPULATION_N = 35
-DESIGN_AGENTS_PER_IDEOLOGY_LEVEL = 5
-EXPERIMENT_SIMULATION_DAYS = 15
-# Each simulated day, every agent independently draws this many distinct random peers (reshuffled daily).
-# Interaction rules: see World.decide_agent_interactions (单向独立 / 自我剔除 / 日内不放回 / 跨日有放回).
-EXPERIMENT_RANDOM_CONTACTS_PER_DAY = 3
-
 
 def allocate_equal_ideology_levels(n: int):
     """
@@ -153,17 +137,20 @@ def build_personas_stratified_orthogonal(rng=None):
     personas = []
     edu_template = list(PERSONA_EDUCATION_LEVELS)
     bracket_template = list(PERSONA_AGE_BRACKETS)
-    if len(edu_template) != DESIGN_AGENTS_PER_IDEOLOGY_LEVEL:
-        raise ValueError("PERSONA_EDUCATION_LEVELS must have length 5.")
-    if len(bracket_template) != DESIGN_AGENTS_PER_IDEOLOGY_LEVEL:
-        raise ValueError("PERSONA_AGE_BRACKETS must have length 5.")
+    from config import get_config
+
+    per_level = get_config().experiment.agents_per_ideology
+    if len(edu_template) != per_level:
+        raise ValueError("PERSONA_EDUCATION_LEVELS must match experiment.agents_per_ideology.")
+    if len(bracket_template) != per_level:
+        raise ValueError("PERSONA_AGE_BRACKETS must match experiment.agents_per_ideology.")
 
     for ideology in range(1, 8):
         edu_order = edu_template[:]
         rnd.shuffle(edu_order)
         bracket_order = bracket_template[:]
         rnd.shuffle(bracket_order)
-        for j in range(DESIGN_AGENTS_PER_IDEOLOGY_LEVEL):
+        for j in range(per_level):
             _label, lo, hi = bracket_order[j]
             personas.append(
                 {
@@ -241,16 +228,8 @@ def factorize(n):
             return (i, n // i)
     return (n, 1)
 
-# LLM settings (API base: env VLLM_API_BASE; also OPENAI_API_KEY, LLM_MODEL)
-_LLM = {
-    "base_url": None,
-    "api_key": None,
-    "model": "gpt-3.5-turbo",
-    "use_json_mode": True,
-    "max_retries": 30,
-    "max_workers": 8,
-    "max_tokens": 2048,
-}
+# Runtime LLM client state (filled by configure_llm from config + env/CLI overrides).
+_LLM: dict = {}
 
 
 def configure_llm(
@@ -267,13 +246,38 @@ def configure_llm(
 
     c = get_config().llm
 
-    _LLM["base_url"] = base_url if base_url is not None else os.getenv("VLLM_API_BASE")
-    _LLM["api_key"] = (
-        api_key
-        if api_key is not None
-        else os.environ.get("OPENAI_API_KEY") or c.api_key_fallback
-    )
-    _LLM["model"] = model if model is not None else os.environ.get("LLM_MODEL") or c.model
+    _LLM.clear()
+
+    if base_url is not None and str(base_url).strip():
+        resolved_base = str(base_url).strip()
+    elif os.environ.get("VLLM_API_BASE", "").strip():
+        resolved_base = os.environ["VLLM_API_BASE"].strip()
+    else:
+        raise ValueError(
+            "VLLM_API_BASE is required: export VLLM_API_BASE or pass --vllm_api_base"
+        )
+    _LLM["base_url"] = resolved_base
+
+    if api_key is not None:
+        resolved_key = str(api_key)
+    elif "OPENAI_API_KEY" in os.environ:
+        resolved_key = os.environ["OPENAI_API_KEY"]
+    else:
+        raise ValueError(
+            "OPENAI_API_KEY is required: export OPENAI_API_KEY or pass --llm_api_key"
+        )
+    _LLM["api_key"] = resolved_key
+    if model is not None and str(model).strip():
+        resolved_model = str(model).strip()
+    elif os.environ.get("LLM_MODEL", "").strip():
+        resolved_model = os.environ["LLM_MODEL"].strip()
+    elif c.model.strip():
+        resolved_model = c.model.strip()
+    else:
+        raise ValueError(
+            "LLM model is required: set llm.model in config.yaml, export LLM_MODEL, or pass --llm_model"
+        )
+    _LLM["model"] = resolved_model
     _LLM["use_json_mode"] = use_json_mode if use_json_mode is not None else c.use_json_mode
     _LLM["max_retries"] = max_retries if max_retries is not None else c.max_retries
     if max_workers is not None:
@@ -320,7 +324,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": _LLM.get("max_tokens", 2048),
+        "max_tokens": _LLM.get("max_tokens") or 2048,
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
@@ -329,9 +333,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
     try:
         from openai import OpenAI
 
-        client_kwargs = {"api_key": _LLM["api_key"] or "ollama"}
-        if _LLM["base_url"]:
-            client_kwargs["base_url"] = _LLM["base_url"]
+        client_kwargs = {"api_key": _LLM["api_key"], "base_url": _LLM["base_url"]}
         client = OpenAI(**client_kwargs)
         return client.chat.completions.create(**kwargs)
     except Exception:
@@ -340,7 +342,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
     # Legacy openai.ChatCompletion (some pinned installs)
     if _LLM["base_url"]:
         openai.api_base = _LLM["base_url"]
-    openai.api_key = _LLM["api_key"] or "ollama"
+    openai.api_key = _LLM["api_key"]
     return openai.ChatCompletion.create(**kwargs)
 
 
@@ -354,7 +356,8 @@ def _message_content(response) -> str:
 
 def _chat_with_retries(messages, model, temperature, json_mode=False) -> str:
     last_err = None
-    for attempt in range(_LLM["max_retries"]):
+    max_retries = _LLM.get("max_retries") or 30
+    for attempt in range(max_retries):
         try:
             response = _chat_create(messages, model, temperature, json_mode=json_mode)
             return _message_content(response)
@@ -369,23 +372,35 @@ def _chat_with_retries(messages, model, temperature, json_mode=False) -> str:
             from config import get_config
 
             llm = get_config().llm
-            print(f"LLM error (attempt {attempt + 1}/{_LLM['max_retries']}): {last_err}")
+            print(f"LLM error (attempt {attempt + 1}/{max_retries}): {last_err}")
             time.sleep(
                 min(
                     llm.retry_sleep_cap,
                     llm.retry_sleep_base * (attempt + 1),
                 )
             )
-    raise RuntimeError(f"LLM request failed after {_LLM['max_retries']} retries: {last_err}")
+    raise RuntimeError(f"LLM request failed after {max_retries} retries: {last_err}")
+
+
+def _require_llm_model(explicit=None) -> str:
+    if not _LLM:
+        raise RuntimeError("LLM not configured. Call configure_llm() after init_config().")
+    resolved = (explicit or _LLM.get("model") or "").strip()
+    if not resolved:
+        raise RuntimeError(
+            "LLM model is not set. Configure via llm.model, LLM_MODEL, or --llm_model before calling the API."
+        )
+    return resolved
 
 
 def get_completion_from_messages(messages, model=None, temperature=0):
-    model = model or _LLM["model"]
-    return _chat_with_retries(messages, model, temperature, json_mode=False)
+    return _chat_with_retries(
+        messages, _require_llm_model(model), temperature, json_mode=False
+    )
 
 
 def get_completion_from_messages_json(messages, model=None, temperature=0):
-    model = model or _LLM["model"]
+    model = _require_llm_model(model)
     use_json = _LLM["use_json_mode"]
     content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
     parsed = _extract_json_object(content)

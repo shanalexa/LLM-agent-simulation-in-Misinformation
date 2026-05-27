@@ -1,14 +1,16 @@
 import argparse
-import json
 import os
 
 import pandas as pd
 
-from config import get_config, get_config_path, init_config
-from prompt import CHECKPOINT_DAY, EXPERIMENT_BRANCHES
+from config import get_config, get_config_path, get_personas_path, get_prompts_path, init_config
+from run_manifest import (
+    apply_random_seed,
+    create_run_manifest,
+    finalize_run_manifest,
+    write_run_manifest,
+)
 from utils import (
-    AGENTS_CONFIG_PATH,
-    EXPERIMENT_SIMULATION_DAYS,
     configure_llm,
     export_agents_config,
     get_llm_config,
@@ -47,11 +49,11 @@ def _build_parser(cfg):
         "--phase",
         choices=["full", "phase1", "phase2", "branch"],
         default=cfg.run.default_phase,
-        help="full=Day0–7 then 5 branches; phase1=Day0–7 only; phase2=all branches from checkpoint; branch=one branch.",
+        help="full=Day0–7 baseline then 5 branches (Day8–15); phase1=Day0–7 only; phase2/branches from checkpoint.",
     )
     parser.add_argument(
         "--branch",
-        choices=list(EXPERIMENT_BRANCHES),
+        choices=list(cfg.experiment.branches),
         default=cfg.run.default_branch,
         help="Intervention branch for phase2/branch.",
     )
@@ -78,6 +80,83 @@ def _build_parser(cfg):
     return parser
 
 
+def _run_single_iteration(args, cfg, checkpoint_path, output_path, run_branch):
+    ckpt_day7 = os.path.join(output_path, "checkpoint_day7.json")
+    if args.checkpoint_day7 and not os.path.isabs(args.checkpoint_day7):
+        if not os.path.exists(args.checkpoint_day7) and os.path.exists(ckpt_day7):
+            args.checkpoint_day7 = ckpt_day7
+
+    if args.phase in ("phase2", "branch"):
+        if not os.path.exists(args.checkpoint_day7):
+            raise FileNotFoundError(
+                f"Day 7 checkpoint not found: {args.checkpoint_day7}. Run --phase phase1 first."
+            )
+        branches = [args.branch] if args.phase == "branch" else list(cfg.experiment.branches)
+        for branch in branches:
+            print(f"=== Branch {branch} (Day 8–15) ===")
+            model = World.from_checkpoint_day7(args, args.checkpoint_day7, experiment_branch=branch)
+            model.name = f"{args.name}_{branch}"
+            run_branch(
+                model,
+                checkpoint_path,
+                output_path,
+                offset=cfg.experiment.checkpoint_day,
+                end_day=cfg.experiment.simulation_days,
+            )
+        return
+
+    if args.load_from_run != 0:
+        checkpoint_file = f"{cfg.paths.checkpoint_dir}/run-{args.load_from_run + 1}/{args.name}-{args.offset}.pkl"
+        if os.path.exists(checkpoint_file):
+            model = World.load_checkpoint(checkpoint_file)
+        else:
+            model = World(
+                args,
+                initial_healthy=args.no_init_healthy,
+                initial_infected=args.no_init_infect,
+            )
+    else:
+        model = World(
+            args,
+            initial_healthy=args.no_init_healthy,
+            initial_infected=args.no_init_infect,
+        )
+
+    exp = cfg.experiment
+    phase1_end = exp.checkpoint_day if args.phase in ("phase1", "full") else exp.simulation_days
+    run_branch(
+        model,
+        checkpoint_path,
+        output_path,
+        offset=args.offset,
+        end_day=phase1_end,
+    )
+
+    if args.phase == "phase1":
+        model.export_checkpoint_day7(ckpt_day7)
+        print(f"Phase 1 complete. Checkpoint: {ckpt_day7}")
+        return
+
+    if args.phase == "full":
+        if not os.path.exists(ckpt_day7):
+            model.export_checkpoint_day7(ckpt_day7)
+        print(f"Phase 1 complete. Checkpoint: {ckpt_day7}")
+        for branch in exp.branches:
+            print(f"=== Branch {branch} (Day 8–15) ===")
+            branch_model = World.from_checkpoint_day7(args, ckpt_day7, experiment_branch=branch)
+            branch_model.name = f"{args.name}_{branch}"
+            run_branch(
+                branch_model,
+                checkpoint_path,
+                output_path,
+                offset=exp.checkpoint_day,
+                end_day=exp.simulation_days,
+            )
+
+    if args.phase != "phase1":
+        model.save_checkpoint(file_path=f"{checkpoint_path}/{args.name}-completed.pkl")
+
+
 if __name__ == "__main__":
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", default=os.environ.get("MGS_CONFIG", "config.yaml"))
@@ -99,13 +178,17 @@ if __name__ == "__main__":
         max_workers=args.llm_workers,
         max_tokens=args.llm_max_tokens,
     )
-    print(f"Config: {get_config_path()}")
+    apply_random_seed(cfg.experiment.random_seed)
+    config_path = get_config_path()
+    if config_path is None:
+        raise RuntimeError("Config path unavailable after init_config()")
+    print(f"Config: {config_path}")
     print(f"Parameters: {args}")
     print(f"LLM: {get_llm_config()}")
 
     os.makedirs(cfg.paths.output_dir, exist_ok=True)
     os.makedirs(cfg.paths.checkpoint_dir, exist_ok=True)
-    export_agents_config(AGENTS_CONFIG_PATH)
+    export_agents_config(cfg.paths.agents_config)
 
     def run_branch(world, checkpoint_path, output_path, offset=0, end_day=None):
         world.run_model(
@@ -125,81 +208,32 @@ if __name__ == "__main__":
         os.makedirs(checkpoint_path, exist_ok=True)
         os.makedirs(output_path, exist_ok=True)
 
-        ckpt_day7 = os.path.join(output_path, "checkpoint_day7.json")
-        if args.checkpoint_day7 and not os.path.isabs(args.checkpoint_day7):
-            if not os.path.exists(args.checkpoint_day7) and os.path.exists(ckpt_day7):
-                args.checkpoint_day7 = ckpt_day7
-
-        if args.phase in ("phase2", "branch"):
-            if not os.path.exists(args.checkpoint_day7):
-                raise FileNotFoundError(
-                    f"Day 7 checkpoint not found: {args.checkpoint_day7}. Run --phase phase1 first."
-                )
-            branches = [args.branch] if args.phase == "branch" else list(EXPERIMENT_BRANCHES)
-            for branch in branches:
-                print(f"=== Branch {branch} (Day 8–15) ===")
-                model = World.from_checkpoint_day7(args, args.checkpoint_day7, experiment_branch=branch)
-                model.name = f"{args.name}_{branch}"
-                run_branch(
-                    model,
-                    checkpoint_path,
-                    output_path,
-                    offset=CHECKPOINT_DAY,
-                    end_day=EXPERIMENT_SIMULATION_DAYS,
-                )
-            continue
-
-        if args.load_from_run != 0:
-            checkpoint_file = f"{cfg.paths.checkpoint_dir}/run-{args.load_from_run + 1}/{args.name}-{args.offset}.pkl"
-            if os.path.exists(checkpoint_file):
-                model = World.load_checkpoint(checkpoint_file)
-            else:
-                model = World(
-                    args,
-                    initial_healthy=args.no_init_healthy,
-                    initial_infected=args.no_init_infect,
-                )
-        else:
-            model = World(
-                args,
-                initial_healthy=args.no_init_healthy,
-                initial_infected=args.no_init_infect,
-            )
-
-        phase1_end = CHECKPOINT_DAY if args.phase == "phase1" else EXPERIMENT_SIMULATION_DAYS
-        run_branch(
-            model,
-            checkpoint_path,
-            output_path,
-            offset=args.offset,
-            end_day=phase1_end,
+        manifest_path = os.path.join(output_path, "run_manifest.json")
+        manifest = create_run_manifest(
+            run_name=args.name,
+            run_index=i + 1,
+            phase=args.phase,
+            args=args,
+            config_path=config_path,
+            personas_path=get_personas_path(),
+            prompts_path=get_prompts_path(),
+            random_seed=cfg.experiment.random_seed,
+            llm_config=get_llm_config(),
         )
+        write_run_manifest(manifest_path, manifest)
+        print(f"  Run manifest: {manifest_path}")
 
-        if args.phase == "phase1":
-            model.export_checkpoint_day7(ckpt_day7)
-            print(f"Phase 1 complete. Checkpoint: {ckpt_day7}")
-            continue
-
-        if args.phase == "full":
-            if not os.path.exists(ckpt_day7):
-                src = os.path.join(cfg.paths.output_dir, "checkpoint_day7.json")
-                if os.path.exists(src):
-                    ckpt_day7 = src
-                elif os.path.exists(os.path.join(output_path, "checkpoint_day7.json")):
-                    ckpt_day7 = os.path.join(output_path, "checkpoint_day7.json")
-                else:
-                    model.export_checkpoint_day7(ckpt_day7)
-            for branch in EXPERIMENT_BRANCHES:
-                print(f"=== Branch {branch} (Day 8–15) ===")
-                branch_model = World.from_checkpoint_day7(args, ckpt_day7, experiment_branch=branch)
-                branch_model.name = f"{args.name}_{branch}"
-                run_branch(
-                    branch_model,
-                    checkpoint_path,
-                    output_path,
-                    offset=CHECKPOINT_DAY,
-                    end_day=EXPERIMENT_SIMULATION_DAYS,
-                )
-
-        if args.phase != "phase1":
-            model.save_checkpoint(file_path=f"{checkpoint_path}/{args.name}-completed.pkl")
+        try:
+            _run_single_iteration(
+                args=args,
+                cfg=cfg,
+                checkpoint_path=checkpoint_path,
+                output_path=output_path,
+                run_branch=run_branch,
+            )
+            finalize_run_manifest(manifest, status="completed")
+        except Exception as exc:
+            finalize_run_manifest(manifest, status="failed", error=str(exc))
+            raise
+        finally:
+            write_run_manifest(manifest_path, manifest)
