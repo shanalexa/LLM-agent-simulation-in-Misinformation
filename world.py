@@ -383,7 +383,6 @@ class World(mesa.Model):
                 print(f"  Saved {out}")
 
             self.current_date += timedelta(days=1)
-            from config import get_config
 
             if checkpoint_path and get_config().world.save_daily_pickle:
                 path = f"{checkpoint_path}/{self.name}-{day}.pkl"
