@@ -43,7 +43,14 @@ class Citizen(mesa.Agent):
         topic,
         political_ideology: int,
     ):
-        super().__init__(unique_id, model)
+        # Mesa scheduler/Agent APIs changed across major versions.
+        # - Mesa <3: Agent.__init__(unique_id, model)
+        # - Mesa >=3: Agent.__init__(model, *args, **kwargs)
+        try:
+            super().__init__(model)
+            self.unique_id = unique_id
+        except TypeError:
+            super().__init__(unique_id, model)
         self.agent_config_id = agent_config_id
         self.name = name
         self.age = age
