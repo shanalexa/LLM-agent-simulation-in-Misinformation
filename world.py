@@ -21,11 +21,16 @@ from utils import (
 # lightweight container for agents because this project explicitly iterates
 # over the full population each day.
 class _AgentSchedule:
-    def __init__(self):
+    def __init__(self, model):
+        self.model = model
         self.agents = []
 
     def add(self, agent):
         self.agents.append(agent)
+        # Mesa 3.x Model keeps an internal registry of agents.
+        reg = getattr(self.model, "_all_agents", None)
+        if isinstance(reg, list):
+            reg.append(agent)
 
 
 # Agent-level reporters for mesa.DataCollector (analysis metrics computed offline).
@@ -77,6 +82,12 @@ class World(mesa.Model):
         checkpoint_agents=None,
         run_day0=True,
     ):
+        # Initialize Mesa Model internals (Mesa 3.x expects _all_agents etc).
+        try:
+            super().__init__()
+        except TypeError:
+            super().__init__()
+
         self.initial_healthy = initial_healthy
         self.initial_infected = initial_infected
         self.population = initial_healthy + initial_infected
@@ -102,7 +113,11 @@ class World(mesa.Model):
         self.contact_rate = exp.contacts_per_day
         self.belief_infected_threshold = int(getattr(args, "belief_threshold", exp.belief_threshold))
 
-        self.schedule = _AgentSchedule()
+        # Ensure registry exists for DataCollector in Mesa 3.x.
+        if not hasattr(self, "_all_agents"):
+            self._all_agents = []
+
+        self.schedule = _AgentSchedule(self)
         self.datacollector = mesa.DataCollector(
             agent_reporters={
                 "simulation_day": _agent_simulation_day,
