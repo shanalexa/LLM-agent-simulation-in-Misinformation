@@ -17,6 +17,17 @@ from utils import (
     ideology_level_from_name,
 )
 
+# Mesa 3.x removed legacy schedulers like RandomActivation. We only need a
+# lightweight container for agents because this project explicitly iterates
+# over the full population each day.
+class _AgentSchedule:
+    def __init__(self):
+        self.agents = []
+
+    def add(self, agent):
+        self.agents.append(agent)
+
+
 # Agent-level reporters for mesa.DataCollector (analysis metrics computed offline).
 def _agent_belief_intensity(agent):
     return agent.beliefs[-1] if agent.beliefs else None
@@ -91,7 +102,7 @@ class World(mesa.Model):
         self.contact_rate = exp.contacts_per_day
         self.belief_infected_threshold = int(getattr(args, "belief_threshold", exp.belief_threshold))
 
-        self.schedule = mesa.time.RandomActivation(self)
+        self.schedule = _AgentSchedule()
         self.datacollector = mesa.DataCollector(
             agent_reporters={
                 "simulation_day": _agent_simulation_day,
