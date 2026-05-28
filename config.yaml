@@ -15,6 +15,7 @@ experiment:
   - Neutral
   - Control
   liberal_level_max: 3
+  moderate_level: 4
   conservative_level_min: 5
   ibg_liberal_max: 3
   ibg_conservative_min: 5

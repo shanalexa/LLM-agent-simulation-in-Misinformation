@@ -1,6 +1,70 @@
 # MGS — LLM Agent Misinformation Simulation
 
-35 agents (AIS/DOA), Day 0 rumor broadcast, Days 1–7 peer interaction, Day 8 refutation branches, Days 9–15 follow-up.
+Multi-agent simulation (AIS/DOA): 35 LLM-driven agents, Day 0 rumor broadcast, Days 1–7 peer diffusion, Day 8 five refutation conditions, Days 9–15 follow-up. The program runs the experiment and exports **raw per-agent data**; aggregate metrics (PI, IBG, RSR, AAS) and plots are computed **offline** in your analysis workflow.
+
+## Experiment timeline
+
+| Days | Phase | What happens |
+|------|--------|----------------|
+| 0 | Rumor | All agents receive misinformation; initial belief & SIR |
+| 1–7 | Baseline | Daily peer interaction (shared across conditions) |
+| 7 | Checkpoint | State frozen → `checkpoint_day7.json` |
+| 8 | Intervention | One refutation text per branch (NYT / WSJ / AI / Neutral / Control) |
+| 9–15 | Follow-up | Peer diffusion under that branch |
+
+Five branches share the **same** Day 0–7 history; they diverge from Day 8.
+
+## Repository layout
+
+```
+MGS/
+├── main.py              # CLI entry: phases, runs, exports
+├── config.py            # Load & validate YAML; get_config()
+├── config.yaml          # Experiment, paths, LLM, rumor/refutation texts
+├── personas.yaml        # 5×7 personas + system_prompt_template
+├── prompts.yaml         # LLM task templates (day0 / daily / intervention)
+├── citizen.py           # DOA: belief, SIR, STM/LTM, LLM calls
+├── world.py             # AIS: schedule, days, checkpoint, DataCollector
+├── utils.py             # LLM client, agent config builder
+├── run_manifest.py      # run_manifest.json for reproducibility
+├── scripts/
+│   ├── vllm_serve_qwen36.sh
+│   └── run_phase1_trial.sh
+├── output/run-1/        # Created at runtime
+└── checkpoint/run-1/    # Optional .pkl snapshots
+```
+
+**Design principle:** simulation code only reads config via `init_config()` → `get_config()`. No duplicate experiment defaults in Python (missing required YAML keys fail at startup).
+
+## Configuration
+
+| File | Purpose |
+|------|---------|
+| `config.yaml` | `experiment.*`, `paths.*`, `llm.*`, `texts.*` (misinformation + refutation per branch), `run.*`, `world.*` |
+| `personas.yaml` | `system_prompt_template`, `archetypes`, `ideology_profiles` → 35 agents |
+| `prompts.yaml` | Cognitive / STM / LTM prompt templates |
+
+Paths in `config.yaml`:
+
+```yaml
+paths:
+  personas: personas.yaml
+  prompts: prompts.yaml
+```
+
+Optional: `export MGS_CONFIG=/path/to/config.yaml`
+
+### Parameters used only in offline analysis
+
+`experiment.ibg_liberal_max` and `experiment.ibg_conservative_min` (default 3 and 5) define ideology groups for **Inter-group Belief Gap (IBG)** when you analyze exports. The simulator does not compute IBG during a run.
+
+### LLM settings (priority)
+
+1. CLI: `--llm_model`, `--vllm_api_base`, `--llm_api_key`, `--llm_workers`, …
+2. Environment: `LLM_MODEL`, `VLLM_API_BASE`, `OPENAI_API_KEY`, `LLM_MAX_WORKERS`, `LLM_MAX_TOKENS`
+3. `config.yaml` → `llm.model` (default `Qwen3.6-35B-A3B`)
+
+**Required before run:** `VLLM_API_BASE` and `OPENAI_API_KEY` must be set (no silent fallback). Local vLLM typically uses `OPENAI_API_KEY=EMPTY`.
 
 ## Setup
 
@@ -9,146 +73,131 @@ cd "/path/to/MGS"
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # VLLM_API_BASE and API keys
+cp .env.example .env   # then export variables or use direnv
 ```
 
-## Configuration (`config.yaml`)
+Use a **separate** environment for the vLLM server; this `venv` is only for `python main.py`.
 
-Most experiment parameters (days, agent count, SIR threshold, rumor/refutation texts, LLM temperatures, output paths) live in **`config.yaml`**. Agent personas (5×7 archetypes, ideology backgrounds, `system_prompt_template`) live in **`personas.yaml`**. LLM task prompt templates live in **`prompts.yaml`**. Paths are set under `paths:` in config. Required keys must be present; missing values raise an error at startup (no silent Python fallbacks for experiment semantics).
+## Run (recommended: vLLM + Qwen3.6-35B-A3B)
 
-```bash
-# optional: custom config path
-export MGS_CONFIG=/path/to/my_config.yaml
-python main.py --config config.yaml --phase phase1
-```
-
-CLI still overrides single runs: `--belief_threshold`, `--rumor_topic`, `--no_daily_pickle`, `--vllm_api_base`, etc.
-
-## Recommended: vLLM + Qwen3.6-35B-A3B (trial / main runs)
-
-Use a **separate** environment for vLLM (GPU stack), and this repo’s `venv` only for `python main.py`.
-
-### 1) Start vLLM (terminal A)
+### Terminal A — start vLLM
 
 ```bash
-pip install -U vllm   # or follow https://docs.vllm.ai
-
 chmod +x scripts/vllm_serve_qwen36.sh
 ./scripts/vllm_serve_qwen36.sh
 ```
 
-Served model name: **`Qwen3.6-35B-A3B`**. Client API root comes from **`VLLM_API_BASE`** (not hardcoded in code).
+Served model name must match the client: **`Qwen3.6-35B-A3B`**. Do **not** use `--reasoning-parser qwen3` for MGS.
 
-Tune vLLM server via env before `vllm_serve_qwen36.sh`:
-
-| Variable | Default | Notes |
-|----------|---------|--------|
-| `VLLM_PORT` | `8000` | Server listen port; set `VLLM_API_BASE` to match |
-| `VLLM_TENSOR_PARALLEL` | `1` | Multi-GPU: set to GPU count |
+| Env (server) | Default | Notes |
+|--------------|---------|--------|
+| `VLLM_PORT` | `8000` | Match `VLLM_API_BASE` |
 | `VLLM_MAX_NUM_SEQS` | `16` | Should be ≥ `LLM_MAX_WORKERS` |
-| `VLLM_MAX_MODEL_LEN` | `16384` | Enough for persona + LTM |
-| `VLLM_GPU_MEMORY_UTILIZATION` | `0.92` | |
+| `VLLM_TENSOR_PARALLEL` | `1` | Set to GPU count if multi-GPU |
 
-**Important:** Do **not** pass `--reasoning-parser qwen3` for MGS.
-
-Set the client endpoint (example — use your host/port):
-
-```bash
-export VLLM_API_BASE="http://127.0.0.1:8000/v1"
-```
-
-Verify:
-
-```bash
-curl "${VLLM_API_BASE}/models"
-```
-
-### 2) Run Phase 1 trial (terminal B)
+### Terminal B — simulation
 
 ```bash
 source venv/bin/activate
 
-export VLLM_API_BASE="http://127.0.0.1:8000/v1"   # same host/port as vLLM
+export VLLM_API_BASE="http://127.0.0.1:8000/v1"
 export OPENAI_API_KEY="EMPTY"
 export LLM_MODEL="Qwen3.6-35B-A3B"
+export LLM_MAX_WORKERS=8
 export LLM_MAX_TOKENS=2048
+```
 
-chmod +x scripts/run_phase1_trial.sh
+**Phase 1 only (trial, ~Day 0–7):**
+
+```bash
 ./scripts/run_phase1_trial.sh
+# or:
+python main.py --phase phase1 --name trial1 --llm_workers 8 --no_json_mode --no_daily_pickle
 ```
 
-Or explicitly (reads `VLLM_API_BASE` from the environment):
+**Full experiment (recommended for thesis runs):**
 
 ```bash
-python main.py --phase phase1 --name vllm_qwen36_trial \
-  --llm_api_key EMPTY \
-  --llm_model Qwen3.6-35B-A3B \
-  --llm_workers 8 \
-  --no_json_mode
+python main.py --phase full --name MGS --llm_workers 8 --no_json_mode --no_daily_pickle
 ```
 
-CLI override: `--vllm_api_base "$VLLM_API_BASE"`
-
-Success: `output/run-1/checkpoint_day7.json` and `LLM parallel: Day N` in the log.
-
-### 3) After Phase 1 — branches
+**After Phase 1, five branches only:**
 
 ```bash
-export VLLM_API_BASE="..."   # must still be set
-
 python main.py --phase phase2 \
   --checkpoint_day7 output/run-1/checkpoint_day7.json \
-  --llm_api_key EMPTY \
-  --llm_model Qwen3.6-35B-A3B \
-  --llm_workers 8 \
-  --no_json_mode
+  --llm_workers 8 --no_json_mode --no_daily_pickle
 ```
 
-Single branch: `--phase branch --branch NYT`.
-
-## Ollama (alternative)
-
-Point `VLLM_API_BASE` at Ollama’s OpenAI-compatible path:
+**Single branch:**
 
 ```bash
-export VLLM_API_BASE="http://127.0.0.1:11434/v1"
-export OPENAI_API_KEY="ollama"
-export LLM_MODEL="qwen2.5:7b"
-
-python main.py --phase phase1 --name trial1 --no_json_mode
+python main.py --phase branch --branch NYT \
+  --checkpoint_day7 output/run-1/checkpoint_day7.json \
+  --no_json_mode --no_daily_pickle
 ```
 
-## Parallel LLM
+### Run modes
+
+| `--phase` | Behavior |
+|-----------|----------|
+| `phase1` | Day 0–7 → `checkpoint_day7.json` |
+| `phase2` | All five branches from existing Day 7 checkpoint |
+| `branch` | One branch (`--branch NYT`) Day 8–15 |
+| `full` | Phase 1 (stops at Day 7), then five branches (one command) |
+
+`--no_of_runs N` creates `output/run-1` … `output/run-N`.
+
+### Disable large pickle snapshots
 
 ```bash
-export LLM_MAX_WORKERS=8
-python main.py --phase phase1 --llm_workers 8 --no_json_mode
+python main.py --phase full --no_daily_pickle
 ```
 
-`VLLM_MAX_NUM_SEQS` on the server should be ≥ `LLM_MAX_WORKERS`.
+Or in `config.yaml`: `world.save_daily_pickle: false`. JSON/CSV outputs are enough for analysis; daily `.pkl` files are only for mid-run resume.
 
-## Run modes
+## Outputs (`output/run-1/`)
 
-| Command | What it runs |
-|---------|----------------|
-| `--phase phase1` | Day 0–7 → `checkpoint_day7.json` |
-| `--phase branch --branch Control` | One branch Day 8–15 |
-| `--phase phase2` | All five branches from checkpoint |
-| `--phase full` | Day 0–7 (baseline), then five branches Day 8–15 (one command) |
+| Artifact | Description |
+|----------|-------------|
+| `run_manifest.json` | Git commit, `random_seed`, LLM config (key redacted), CLI args, snapshots of `config.yaml` / `personas.yaml` / `prompts.yaml`, start/end time |
+| `checkpoint_day7.json` | All agents at end of Day 7 (branch fork point) |
+| `MGS-Phase1-agents-panel.csv` | Per-agent daily rows, Days 0–7 |
+| `MGS_{Branch}-agents-panel.csv` | Per-agent daily rows, Days 8–15 (e.g. `MGS_NYT-…`) |
+| `results_{Branch}_Day15.json` | Full `history_log` per agent at Day 15 |
 
-## Outputs
+**Agents panel columns** include: `simulation_day`, `experiment_branch`, `BeliefIntensity`, `RumorBeliefState`, `PoliticalIdeology`, demographics, `AgentConfigID`. Mesa index `Step` is the collection order within that file (for branch files, Day 8 → `Step` 0).
 
-- `output/run-1/run_manifest.json` — reproducibility record (config snapshot, git commit, seed, LLM, timestamps)
-- `output/run-1/MGS-Phase1-agents-panel.csv` — daily per-agent belief & SIR (Day 0–7)
-- `output/run-1/MGS_{Branch}-agents-panel.csv` — same for each intervention branch (Day 8–15)
-- `output/run-1/checkpoint_day7.json` — Day 7 state (~1–3 MB)
-- `output/run-1/results_{Branch}_Day15.json` — final panels with full `history_log` (~2–4 MB each)
-- `checkpoint/run-1/*.pkl` — optional daily snapshots (~0.5–2 GB total if kept)
+**Building 16-day series for five conditions:** concatenate Phase1 CSV (Days 0–7) with each branch CSV (Days 8–15), keyed on `simulation_day` and `experiment_branch`.
 
-PI, IBG, RSR, AAS and plots are computed offline from the panel/JSON exports.
+`agents_config.json` is regenerated at startup (35 agents from `personas.yaml`).
 
-## Notes
+Optional: `checkpoint/run-1/*.pkl` if `save_daily_pickle` is enabled.
 
-- `agents_config.json` is regenerated on each run.
-- Local Qwen/vLLM: use **`--no_json_mode`** unless JSON mode is verified.
-- Cloud OpenAI: set **`VLLM_API_BASE=https://api.openai.com/v1`** and **`OPENAI_API_KEY`** (both required).
+## Offline analysis (not in this repo)
+
+Compute in Jupyter/R/Python from panel + JSON:
+
+- **PI** — std of `BeliefIntensity` across 35 agents per day  
+- **IBG** — \|mean(belief, ideology ≤ `ibg_liberal_max`) − mean(belief, ideology ≥ `ibg_conservative_min`)\|  
+- **RSR** — share of population in `Recovered` (completed Infected→Recovered)  
+- **AAS** — mean \|belief(t) − belief(0)\| (or your thesis-specified windows, e.g. Day8−Day0, Day15−Day7)
+
+Plots and statistical tests belong in your analysis project, not in `main.py`.
+
+## Runtime notes
+
+- **Parallel LLM:** `--llm_workers` / `LLM_MAX_WORKERS` (default 8). Server `VLLM_MAX_NUM_SEQS` ≥ workers.
+- **JSON mode:** use `--no_json_mode` for local Qwen/vLLM unless you have verified JSON `response_format` support.
+- **Reproducibility:** `experiment.random_seed` sets Python/NumPy RNG (contact sampling). LLM outputs remain stochastic unless the server temperature is 0.
+- **Rough runtime:** full run ~5000 LLM calls; ~3–8 h on one GPU with 8 workers (model-dependent).
+
+## Cloud OpenAI
+
+```bash
+export VLLM_API_BASE="https://api.openai.com/v1"
+export OPENAI_API_KEY="sk-..."
+export LLM_MODEL="gpt-4o"   # or your deployment name
+```
+
+Both `VLLM_API_BASE` and `OPENAI_API_KEY` are mandatory.

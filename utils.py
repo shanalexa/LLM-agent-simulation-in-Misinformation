@@ -329,7 +329,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    # Prefer OpenAI Python SDK v1+ (Ollama / vLLM / LM Studio / cloud)
+    # Prefer OpenAI Python SDK v1+ (vLLM / other OpenAI-compatible servers)
     try:
         from openai import OpenAI
 
