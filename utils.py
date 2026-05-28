@@ -298,28 +298,105 @@ def get_llm_config():
     return dict(_LLM)
 
 
-def _extract_json_object(text: str) -> dict:
+_THINKING_BLOCK_RE = re.compile(
+    r"<(?:redacted_thinking|analysis|think)\b[^>]*>[\s\S]*?</(?:redacted_thinking|analysis|think)>",
+    re.IGNORECASE,
+)
+# Unclosed thinking block: strip from opening tag up to the first '{' (JSON payload).
+_UNCLOSED_THINKING_RE = re.compile(
+    r"<(?:redacted_thinking|analysis|think)\b[^>]*>[\s\S]*?(?=\{)",
+    re.IGNORECASE,
+)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
+
+def _strip_model_thinking_blocks(text: str) -> str:
+    """Remove chain-of-thought wrappers (e.g. Qwen <think>...</think>)."""
     text = (text or "").strip()
-    # Some local models (e.g., Qwen on vLLM) may emit chain-of-thought blocks
-    # like <think>...</think> before the JSON. Strip them before parsing.
-    if "<think>" in text:
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
-    if "<analysis>" in text:
-        text = re.sub(r"<analysis>[\s\S]*?</analysis>", "", text, flags=re.IGNORECASE).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    if fenced:
+    text = _THINKING_BLOCK_RE.sub("", text).strip()
+    text = _UNCLOSED_THINKING_RE.sub("", text).strip()
+    return text
+
+
+def _extract_fenced_json(text: str) -> str | None:
+    match = _JSON_FENCE_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_balanced_brace_object(text: str) -> str | None:
+    """Return the first top-level {...} substring using brace matching (respects JSON strings)."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _json_load_candidates(text: str) -> list[str]:
+    """Build an ordered list of JSON string candidates to try."""
+    cleaned = _strip_model_thinking_blocks(text)
+    candidates: list[str] = []
+
+    def add(candidate: str | None) -> None:
+        if not candidate:
+            return
+        candidate = candidate.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    add(cleaned)
+    add(_extract_fenced_json(cleaned))
+    add(_extract_balanced_brace_object(cleaned))
+
+    for match in reversed(list(re.finditer(r"\{[\s\S]*\}", cleaned))):
+        add(match.group(0))
+
+    return candidates
+
+
+def _extract_json_object(text: str) -> dict:
+    """
+  Parse model output that may prefix chain-of-thought blocks before JSON.
+  Strips <think>...</think>, then loads from ```json``` fence
+  or the outermost {...} object.
+    """
+    last_error: json.JSONDecodeError | None = None
+    for candidate in _json_load_candidates(text):
         try:
-            return json.loads(fenced.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        return json.loads(text[start : end + 1])
-    raise ValueError(f"Could not parse JSON from model output: {text[:500]}...")
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+
+    preview = _strip_model_thinking_blocks(text)[:500]
+    if last_error is not None:
+        raise ValueError(
+            f"Could not parse JSON from model output: {preview!r}... "
+            f"(json.JSONDecodeError: {last_error})"
+        ) from last_error
+    raise ValueError(f"Could not parse JSON from model output: {preview!r}...")
 
 
 def _chat_create(messages, model, temperature, json_mode=False):
@@ -406,11 +483,10 @@ def get_completion_from_messages(messages, model=None, temperature=0):
 
 
 def get_completion_from_messages_json(messages, model=None, temperature=0):
+    """Return raw model text; callers should parse with _extract_json_object()."""
     model = _require_llm_model(model)
     use_json = _LLM["use_json_mode"]
-    content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
-    parsed = _extract_json_object(content)
-    return json.dumps(parsed, ensure_ascii=False)
+    return _chat_with_retries(messages, model, temperature, json_mode=use_json)
 
 
 

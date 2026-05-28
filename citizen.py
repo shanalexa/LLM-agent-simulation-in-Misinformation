@@ -6,6 +6,7 @@ import mesa
 
 from config import daily_stm_prompt, get_config
 from utils import (
+    _extract_json_object,
     get_completion_from_messages,
     get_completion_from_messages_json,
     ideology_group_from_level,
@@ -111,8 +112,8 @@ class Citizen(mesa.Agent):
         msg.append({"role": "user", "content": user_msg})
         return msg
 
-    def _parse_cognitive_json(self, response_json: str):
-        output = json.loads(response_json)
+    def _parse_cognitive_json(self, response_text: str):
+        output = _extract_json_object(response_text)
         tweet = output.get("opinion") or output.get("tweet", "")
         belief = output.get("belief_score", output.get("belief"))
         reasoning = output.get("reasoning", "")
@@ -122,10 +123,8 @@ class Citizen(mesa.Agent):
         return tweet, belief, reasoning
 
     def _llm_cognitive_json(self, user_msg: str, temperature: float = 1.0):
-        response_json = get_completion_from_messages_json(
-            self._messages(user_msg), temperature=temperature
-        )
-        return self._parse_cognitive_json(response_json)
+        raw = get_completion_from_messages_json(self._messages(user_msg), temperature=temperature)
+        return self._parse_cognitive_json(raw)
 
     def _llm_text(self, user_msg: str, temperature: float = 0.5):
         return get_completion_from_messages(self._messages(user_msg), temperature=temperature)
