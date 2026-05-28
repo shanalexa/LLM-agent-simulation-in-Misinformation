@@ -28,7 +28,7 @@ MGS/
 ├── utils.py             # LLM client, agent config builder
 ├── run_manifest.py      # run_manifest.json for reproducibility
 ├── scripts/
-│   ├── vllm_serve_qwen36.sh
+│   ├── vllm_serve_qwen25.sh
 │   └── run_phase1_trial.sh
 ├── output/run-1/        # Created at runtime
 └── checkpoint/run-1/    # Optional .pkl snapshots
@@ -62,7 +62,7 @@ Optional: `export MGS_CONFIG=/path/to/config.yaml`
 
 1. CLI: `--llm_model`, `--vllm_api_base`, `--llm_api_key`, `--llm_workers`, …
 2. Environment: `LLM_MODEL`, `VLLM_API_BASE`, `OPENAI_API_KEY`, `LLM_MAX_WORKERS`, `LLM_MAX_TOKENS`
-3. `config.yaml` → `llm.model` (default `Qwen3.6-35B-A3B`)
+3. `config.yaml` → `llm.model` (default `Qwen2.5-32B-Instruct`)
 
 **Required before run:** `VLLM_API_BASE` and `OPENAI_API_KEY` must be set (no silent fallback). Local vLLM typically uses `OPENAI_API_KEY=EMPTY`.
 
@@ -78,16 +78,16 @@ cp .env.example .env   # then export variables or use direnv
 
 Use a **separate** environment for the vLLM server; this `venv` is only for `python main.py`.
 
-## Run (recommended: vLLM + Qwen3.6-35B-A3B)
+## Run (recommended: vLLM + Qwen2.5-32B-Instruct)
 
 ### Terminal A — start vLLM
 
 ```bash
-chmod +x scripts/vllm_serve_qwen36.sh
-./scripts/vllm_serve_qwen36.sh
+chmod +x scripts/vllm_serve_qwen25.sh
+./scripts/vllm_serve_qwen25.sh
 ```
 
-Served model name must match the client: **`Qwen3.6-35B-A3B`**. Do **not** use `--reasoning-parser qwen3` for MGS.
+Hub model: **`Qwen/Qwen2.5-32B-Instruct`**. Client `LLM_MODEL` / `llm.model` must match **`--served-model-name`** (default **`Qwen2.5-32B-Instruct`**).
 
 | Env (server) | Default | Notes |
 |--------------|---------|--------|
@@ -102,7 +102,7 @@ source venv/bin/activate
 
 export VLLM_API_BASE="http://127.0.0.1:8000/v1"
 export OPENAI_API_KEY="EMPTY"
-export LLM_MODEL="Qwen3.6-35B-A3B"
+export LLM_MODEL="Qwen2.5-32B-Instruct"
 export LLM_MAX_WORKERS=8
 export LLM_MAX_TOKENS=2048
 ```

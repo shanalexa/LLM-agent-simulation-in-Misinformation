@@ -299,26 +299,74 @@ def get_llm_config():
     return dict(_LLM)
 
 
+def _normalize_model_text(model_output: str) -> str:
+    """Collapse API fields and strip common non-JSON wrappers before parsing."""
+    text = (model_output or "").strip()
+    if not text:
+        return ""
+    # Qwen / reasoning models may still emit thinking tags when misconfigured.
+    text = re.sub(
+        r"<(?:redacted_thinking|think)\b[^>]*>[\s\S]*?</(?:redacted_thinking|think)>",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(
+        r"<(?:redacted_thinking|think)\b[^>]*>",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    return text
+
+
 def parse_json_safely(model_output: str) -> dict:
     """
     Parse JSON from LLM text that may include markdown fences or leading prose.
-    Tries json.loads on the full string first; falls back to the outermost {...}.
+    Tries json.loads on the full string first; falls back to fenced or {...} extraction.
     """
-    text = (model_output or "").strip()
+    text = _normalize_model_text(model_output)
     if not text:
-        raise ValueError("Empty model output")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        raise ValueError("文本中未找到任何大括号结构")
-    except Exception:
-        print(f"JSON解析彻底失败！原始输出是: {model_output}")
-        raise
+        raise ValueError("Empty model output (no content from API)")
+
+    def _loads(candidate: str) -> dict | None:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+
+    parsed = _loads(text)
+    if parsed is not None:
+        return parsed
+
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if fenced:
+        parsed = _loads(fenced.group(1).strip())
+        if parsed is not None:
+            return parsed
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        parsed = _loads(match.group(0))
+        if parsed is not None:
+            return parsed
+
+    preview = text[:800]
+    print(f"JSON解析彻底失败！原始输出是: {preview!r}")
+    raise ValueError("文本中未找到任何大括号结构")
+
+
+def _qwen_thinking_extra_body(model: str) -> dict | None:
+    """Qwen3 reasoning kwargs only; Qwen2.5-Instruct does not use enable_thinking."""
+    name = (model or "").lower()
+    if "qwen3" not in name:
+        return None
+    enable_thinking = bool(_LLM.get("enable_thinking", False))
+    return {
+        "enable_thinking": enable_thinking,
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+    }
 
 
 def _chat_create(messages, model, temperature, json_mode=False):
@@ -334,9 +382,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    # Qwen / vLLM: disable chain-of-thought (non-standard OpenAI field → extra_body).
-    enable_thinking = bool(_LLM.get("enable_thinking", False))
-    extra_body = {"enable_thinking": enable_thinking}
+    extra_body = _qwen_thinking_extra_body(model)
 
     # Prefer OpenAI Python SDK v1+ (vLLM / other OpenAI-compatible servers)
     try:
@@ -344,7 +390,9 @@ def _chat_create(messages, model, temperature, json_mode=False):
 
         client_kwargs = {"api_key": _LLM["api_key"], "base_url": _LLM["base_url"]}
         client = OpenAI(**client_kwargs)
-        return client.chat.completions.create(**kwargs, extra_body=extra_body)
+        if extra_body:
+            return client.chat.completions.create(**kwargs, extra_body=extra_body)
+        return client.chat.completions.create(**kwargs)
     except Exception:
         pass
 
@@ -352,16 +400,42 @@ def _chat_create(messages, model, temperature, json_mode=False):
     if _LLM["base_url"]:
         openai.api_base = _LLM["base_url"]
     openai.api_key = _LLM["api_key"]
-    kwargs.update(extra_body)
+    if extra_body:
+        kwargs.update(extra_body)
     return openai.ChatCompletion.create(**kwargs)
 
 
 def _message_content(response) -> str:
+    """Merge content + reasoning fields (Qwen/vLLM may put text in reasoning_content)."""
     choice = response.choices[0]
     msg = choice.message
-    if isinstance(msg, dict):
-        return msg["content"]
-    return msg.content
+
+    def _get(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    parts: list[str] = []
+    for key in ("content", "reasoning_content", "reasoning"):
+        val = _get(msg, key)
+        if not val:
+            continue
+        if isinstance(val, str):
+            parts.append(val)
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+
+    if not parts:
+        return ""
+    # Prefer the segment that actually contains JSON braces.
+    for part in reversed(parts):
+        if "{" in part:
+            return part.strip()
+    return "\n".join(parts).strip()
 
 
 def _chat_with_retries(messages, model, temperature, json_mode=False) -> str:
@@ -412,9 +486,32 @@ def get_completion_from_messages(messages, model=None, temperature=0):
 def get_completion_from_messages_json(messages, model=None, temperature=0):
     model = _require_llm_model(model)
     use_json = _LLM["use_json_mode"]
-    content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
-    parsed = parse_json_safely(content)
-    return json.dumps(parsed, ensure_ascii=False)
+    max_retries = _LLM.get("max_retries") or 30
+    last_err = None
+    last_content = ""
+    for attempt in range(max_retries):
+        content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
+        last_content = content or ""
+        try:
+            parsed = parse_json_safely(content)
+            return json.dumps(parsed, ensure_ascii=False)
+        except ValueError as exc:
+            last_err = exc
+            from config import get_config
+
+            llm = get_config().llm
+            preview = (last_content or "(empty)")[:500]
+            print(
+                f"JSON parse error (attempt {attempt + 1}/{max_retries}): {exc}; "
+                f"output preview: {preview!r}"
+            )
+            time.sleep(
+                min(llm.retry_sleep_cap, llm.retry_sleep_base * (attempt + 1))
+            )
+    raise RuntimeError(
+        f"Could not parse JSON from model after {max_retries} attempts: {last_err}; "
+        f"last output: {(last_content or '(empty)')[:500]!r}"
+    )
 
 
 

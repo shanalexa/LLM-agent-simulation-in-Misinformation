@@ -30,11 +30,11 @@ paths:
   checkpoint_dir: checkpoint
   checkpoint_day7: output/checkpoint_day7.json
 llm:
-  model: Qwen3.6-35B-A3B
+  model: Qwen2.5-32B-Instruct
   max_retries: 30
   max_workers: 8
   max_tokens: 2048
-  enable_thinking: false
+  enable_thinking: false  # Qwen3 only; ignored for Qwen2.5
   use_json_mode: true
   retry_sleep_base: 0.5
   retry_sleep_cap: 2.0
