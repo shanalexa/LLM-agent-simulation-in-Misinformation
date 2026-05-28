@@ -278,6 +278,7 @@ def configure_llm(
             "LLM model is required: set llm.model in config.yaml, export LLM_MODEL, or pass --llm_model"
         )
     _LLM["model"] = resolved_model
+    _LLM["enable_thinking"] = c.enable_thinking
     _LLM["use_json_mode"] = use_json_mode if use_json_mode is not None else c.use_json_mode
     _LLM["max_retries"] = max_retries if max_retries is not None else c.max_retries
     if max_workers is not None:
@@ -298,105 +299,26 @@ def get_llm_config():
     return dict(_LLM)
 
 
-_THINKING_BLOCK_RE = re.compile(
-    r"<(?:redacted_thinking|analysis|think)\b[^>]*>[\s\S]*?</(?:redacted_thinking|analysis|think)>",
-    re.IGNORECASE,
-)
-# Unclosed thinking block: strip from opening tag up to the first '{' (JSON payload).
-_UNCLOSED_THINKING_RE = re.compile(
-    r"<(?:redacted_thinking|analysis|think)\b[^>]*>[\s\S]*?(?=\{)",
-    re.IGNORECASE,
-)
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
-
-
-def _strip_model_thinking_blocks(text: str) -> str:
-    """Remove chain-of-thought wrappers (e.g. Qwen <think>...</think>)."""
-    text = (text or "").strip()
-    text = _THINKING_BLOCK_RE.sub("", text).strip()
-    text = _UNCLOSED_THINKING_RE.sub("", text).strip()
-    return text
-
-
-def _extract_fenced_json(text: str) -> str | None:
-    match = _JSON_FENCE_RE.search(text)
-    if not match:
-        return None
-    return match.group(1).strip()
-
-
-def _extract_balanced_brace_object(text: str) -> str | None:
-    """Return the first top-level {...} substring using brace matching (respects JSON strings)."""
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-def _json_load_candidates(text: str) -> list[str]:
-    """Build an ordered list of JSON string candidates to try."""
-    cleaned = _strip_model_thinking_blocks(text)
-    candidates: list[str] = []
-
-    def add(candidate: str | None) -> None:
-        if not candidate:
-            return
-        candidate = candidate.strip()
-        if candidate and candidate not in candidates:
-            candidates.append(candidate)
-
-    add(cleaned)
-    add(_extract_fenced_json(cleaned))
-    add(_extract_balanced_brace_object(cleaned))
-
-    for match in reversed(list(re.finditer(r"\{[\s\S]*\}", cleaned))):
-        add(match.group(0))
-
-    return candidates
-
-
-def _extract_json_object(text: str) -> dict:
+def parse_json_safely(model_output: str) -> dict:
     """
-  Parse model output that may prefix chain-of-thought blocks before JSON.
-  Strips <think>...</think>, then loads from ```json``` fence
-  or the outermost {...} object.
+    Parse JSON from LLM text that may include markdown fences or leading prose.
+    Tries json.loads on the full string first; falls back to the outermost {...}.
     """
-    last_error: json.JSONDecodeError | None = None
-    for candidate in _json_load_candidates(text):
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            continue
-
-    preview = _strip_model_thinking_blocks(text)[:500]
-    if last_error is not None:
-        raise ValueError(
-            f"Could not parse JSON from model output: {preview!r}... "
-            f"(json.JSONDecodeError: {last_error})"
-        ) from last_error
-    raise ValueError(f"Could not parse JSON from model output: {preview!r}...")
+    text = (model_output or "").strip()
+    if not text:
+        raise ValueError("Empty model output")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        raise ValueError("文本中未找到任何大括号结构")
+    except Exception:
+        print(f"JSON解析彻底失败！原始输出是: {model_output}")
+        raise
 
 
 def _chat_create(messages, model, temperature, json_mode=False):
@@ -412,13 +334,17 @@ def _chat_create(messages, model, temperature, json_mode=False):
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
+    # Qwen / vLLM: disable chain-of-thought (non-standard OpenAI field → extra_body).
+    enable_thinking = bool(_LLM.get("enable_thinking", False))
+    extra_body = {"enable_thinking": enable_thinking}
+
     # Prefer OpenAI Python SDK v1+ (vLLM / other OpenAI-compatible servers)
     try:
         from openai import OpenAI
 
         client_kwargs = {"api_key": _LLM["api_key"], "base_url": _LLM["base_url"]}
         client = OpenAI(**client_kwargs)
-        return client.chat.completions.create(**kwargs)
+        return client.chat.completions.create(**kwargs, extra_body=extra_body)
     except Exception:
         pass
 
@@ -426,6 +352,7 @@ def _chat_create(messages, model, temperature, json_mode=False):
     if _LLM["base_url"]:
         openai.api_base = _LLM["base_url"]
     openai.api_key = _LLM["api_key"]
+    kwargs.update(extra_body)
     return openai.ChatCompletion.create(**kwargs)
 
 
@@ -483,10 +410,11 @@ def get_completion_from_messages(messages, model=None, temperature=0):
 
 
 def get_completion_from_messages_json(messages, model=None, temperature=0):
-    """Return raw model text; callers should parse with _extract_json_object()."""
     model = _require_llm_model(model)
     use_json = _LLM["use_json_mode"]
-    return _chat_with_retries(messages, model, temperature, json_mode=use_json)
+    content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
+    parsed = parse_json_safely(content)
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 

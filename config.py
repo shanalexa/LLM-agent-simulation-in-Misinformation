@@ -88,6 +88,7 @@ class LLMConfig:
     max_retries: int = 30
     max_workers: int = 8
     max_tokens: int = 2048
+    enable_thinking: bool = False
     use_json_mode: bool = True
     retry_sleep_base: float = 0.5
     retry_sleep_cap: float = 2.0

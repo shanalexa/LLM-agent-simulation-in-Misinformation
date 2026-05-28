@@ -34,6 +34,7 @@ llm:
   max_retries: 30
   max_workers: 8
   max_tokens: 2048
+  enable_thinking: false
   use_json_mode: true
   retry_sleep_base: 0.5
   retry_sleep_cap: 2.0
