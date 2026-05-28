@@ -300,6 +300,12 @@ def get_llm_config():
 
 def _extract_json_object(text: str) -> dict:
     text = (text or "").strip()
+    # Some local models (e.g., Qwen on vLLM) may emit chain-of-thought blocks
+    # like <think>...</think> before the JSON. Strip them before parsing.
+    if "<think>" in text:
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    if "<analysis>" in text:
+        text = re.sub(r"<analysis>[\s\S]*?</analysis>", "", text, flags=re.IGNORECASE).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
