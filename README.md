@@ -174,17 +174,6 @@ Or in `config.yaml`: `world.save_daily_pickle: false`. JSON/CSV outputs are enou
 
 Optional: `checkpoint/run-1/*.pkl` if `save_daily_pickle` is enabled.
 
-## Offline analysis (not in this repo)
-
-Compute in Jupyter/R/Python from panel + JSON:
-
-- **PI** — std of `BeliefIntensity` across 35 agents per day  
-- **IBG** — \|mean(belief, ideology ≤ `ibg_liberal_max`) − mean(belief, ideology ≥ `ibg_conservative_min`)\|  
-- **RSR** — share of population in `Recovered` (completed Infected→Recovered)  
-- **AAS** — mean \|belief(t) − belief(0)\| (or your thesis-specified windows, e.g. Day8−Day0, Day15−Day7)
-
-Plots and statistical tests belong in your analysis project, not in `main.py`.
-
 ## Runtime notes
 
 - **Parallel LLM:** `--llm_workers` / `LLM_MAX_WORKERS` (default 8). Server `VLLM_MAX_NUM_SEQS` ≥ workers.
