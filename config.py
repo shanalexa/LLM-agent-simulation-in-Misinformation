@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +22,7 @@ _EXPERIMENT_REQUIRED = (
     "belief_threshold",
     "belief_min",
     "belief_max",
+    "belief_scale_definition",
     "ltm_max_words",
     "branches",
     "liberal_level_max",
@@ -54,6 +56,7 @@ class ExperimentConfig:
     belief_threshold: int
     belief_min: int
     belief_max: int
+    belief_scale_definition: str
     ltm_max_words: int
     branches: Tuple[str, ...]
     liberal_level_max: int
@@ -86,6 +89,7 @@ class PersonasConfig:
 class LLMConfig:
     model: str
     max_retries: int = 30
+    max_cognitive_retries: int = 8
     max_workers: int = 8
     max_tokens: int = 2048
     enable_thinking: bool = False
@@ -171,6 +175,9 @@ def _load_experiment(data: dict) -> ExperimentConfig:
         belief_threshold=int(data["belief_threshold"]),
         belief_min=int(data["belief_min"]),
         belief_max=int(data["belief_max"]),
+        belief_scale_definition=_require_non_empty_str(
+            data.get("belief_scale_definition"), "experiment.belief_scale_definition"
+        ),
         ltm_max_words=int(data["ltm_max_words"]),
         branches=tuple(str(b) for b in branches),
         liberal_level_max=int(data["liberal_level_max"]),
@@ -351,3 +358,42 @@ def get_personas_path() -> Path:
 
 def get_prompts_path() -> Path:
     return _resolve_path(get_config().paths.prompts)
+
+
+def checkpoint_day7_basename(cfg: Optional["AppConfig"] = None) -> str:
+    """Filename for the Day-7 JSON checkpoint (stored under each output/run-N/)."""
+    return os.path.basename((cfg or get_config()).paths.checkpoint_day7)
+
+
+def checkpoint_day7_path_for_run(output_dir: str | Path, cfg: Optional["AppConfig"] = None) -> Path:
+    """Resolved path: {output_dir}/checkpoint_day7.json (same rule for phase1, phase2, and full)."""
+    return Path(output_dir) / checkpoint_day7_basename(cfg)
+
+
+def resolve_checkpoint_day7_path(
+    cli_path: str | None,
+    output_dir: str | Path,
+    cfg: Optional["AppConfig"] = None,
+) -> Path:
+    """
+    Default: checkpoint under the current run folder.
+    Explicit CLI path: absolute as-is; relative resolved under output_dir then cwd.
+    """
+    c = cfg or get_config()
+    default_path = checkpoint_day7_path_for_run(output_dir, c)
+    if not cli_path:
+        return default_path
+
+    raw = cli_path.strip()
+    basename = checkpoint_day7_basename(c)
+    legacy_global = str(Path(c.paths.output_dir) / basename)
+    if raw in (c.paths.checkpoint_day7, basename, legacy_global):
+        return default_path
+
+    if os.path.isabs(raw):
+        return Path(raw)
+
+    under_run = Path(output_dir) / raw
+    if under_run.is_file():
+        return under_run.resolve()
+    return Path(raw).resolve()

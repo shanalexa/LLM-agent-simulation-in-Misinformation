@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import json
-import logging
 
 import mesa
 
@@ -11,9 +10,6 @@ from utils import (
     ideology_group_from_level,
     truncate_words,
 )
-
-logger = logging.getLogger()
-logger.setLevel(logging.WARNING)
 
 
 def _peer_records_text(peer_opinion_beliefs):
@@ -76,21 +72,8 @@ class Citizen(mesa.Agent):
         self.opinions = []
         self.beliefs = []
         self.reasonings = []
-        self.long_memory_full = []
-        self.short_opinion_memory = []
-        self.long_opinion_memory = ""
         self.contact_ids = []
         self.agent_interaction = []
-
-        self.persona = {
-            "name": name,
-            "age": age,
-            "qualification": qualification,
-            "occupation": occupation,
-            "archetype_id": archetype_id,
-            "agent_config_id": agent_config_id,
-            "political_ideology": political_ideology,
-        }
 
     @property
     def current_belief_score(self):
@@ -113,13 +96,11 @@ class Citizen(mesa.Agent):
 
     def _parse_cognitive_json(self, response_json: str):
         output = json.loads(response_json)
-        tweet = output.get("opinion") or output.get("tweet", "")
-        belief = output.get("belief_score", output.get("belief"))
-        reasoning = output.get("reasoning", "")
-        exp = get_config().experiment
-        belief = int(round(float(belief)))
-        belief = max(exp.belief_min, min(exp.belief_max, belief))
-        return tweet, belief, reasoning
+        return (
+            output["opinion"],
+            int(output["belief_score"]),
+            output["reasoning"],
+        )
 
     def _llm_cognitive_json(self, user_msg: str, temperature: float = 1.0):
         response_json = get_completion_from_messages_json(
@@ -146,12 +127,8 @@ class Citizen(mesa.Agent):
             m = self.model
             if self.health_condition == "Infected" and prev != "Infected":
                 m.daily_new_infected_cases += 1
-                m.infected += 1
-                if prev == "Susceptible":
-                    m.susceptible -= 1
             elif self.health_condition == "Recovered" and prev == "Infected":
-                m.daily_new_susceptible_cases += 1
-                m.infected -= 1
+                m.daily_new_recovered_cases += 1
 
     def _append_history(self, day: int, belief_score: int, tweet: str, reasoning: str, ltm_snapshot: str):
         entry = {
@@ -171,18 +148,20 @@ class Citizen(mesa.Agent):
         user_cog = prompts.day0_cognitive.format(
             persona_prompt=self.persona_prompt,
             misinformation_text=misinformation_text,
+            belief_scale_definition=cfg.experiment.belief_scale_definition,
         )
         llm = cfg.llm
         tweet, belief, reasoning = self._llm_cognitive_json(
             user_cog, temperature=llm.temperature_day0_cognitive
         )
 
-        user_ltm = prompts.day0_ltm_init.format(max_words=ltm_words)
-        ltm_context = (
-            f"News:\n{misinformation_text}\n\nInternal reasoning:\n{reasoning}\n\nYour tweet:\n{tweet}"
+        user_ltm = prompts.day0_ltm_init.format(
+            misinformation_text=misinformation_text,
+            day0_reasoning=reasoning,
+            max_words=ltm_words,
         )
         ltm = truncate_words(
-            self._llm_text(user_ltm + "\n\n" + ltm_context, temperature=llm.temperature_ltm),
+            self._llm_text(user_ltm, temperature=llm.temperature_ltm),
             ltm_words,
         )
 
@@ -190,11 +169,9 @@ class Citizen(mesa.Agent):
         self.belief = belief
         self.reasoning = reasoning
         self.long_term_memory = ltm
-        self.long_opinion_memory = ltm
         self.opinions = [tweet]
         self.beliefs = [belief]
         self.reasonings = [reasoning]
-        self.long_memory_full = [ltm]
 
         self.apply_sir_from_belief(belief)
         self._append_history(0, belief, tweet, reasoning, ltm)
@@ -203,6 +180,7 @@ class Citizen(mesa.Agent):
         self,
         day: int,
         start_opinion: str,
+        start_belief: int,
         start_long_memory: str,
         peer_opinion_beliefs: list,
         contact_ids: list,
@@ -218,30 +196,31 @@ class Citizen(mesa.Agent):
             temperature=llm.temperature_stm,
         )
 
+        prior_ltm = start_long_memory or "(empty)"
+        cog_kwargs = dict(
+            persona_prompt=self.persona_prompt,
+            long_term_memory=prior_ltm,
+            previous_day_tweet=start_opinion or "(none)",
+            previous_day_belief_score=int(start_belief),
+            short_term_memory=stm,
+            belief_scale_definition=cfg.experiment.belief_scale_definition,
+        )
         if refutation_text:
             user_cog = prompts.intervention_cognitive.format(
-                persona_prompt=self.persona_prompt,
-                long_term_memory=start_long_memory or "(empty)",
-                previous_day_tweet=start_opinion or "(none)",
-                short_term_memory=stm,
                 refutation_text=refutation_text,
+                **cog_kwargs,
             )
             user_ltm = prompts.intervention_ltm_compress.format(max_words=ltm_words)
             ltm_user = (
-                f"Existing long-term memory:\n{start_long_memory}\n\n"
+                f"Existing long-term memory:\n{prior_ltm}\n\n"
                 f"Short-term peer observations:\n{stm}\n\n"
                 f"Refutation:\n{refutation_text}\n\n"
             )
         else:
-            user_cog = prompts.daily_cognitive.format(
-                persona_prompt=self.persona_prompt,
-                long_term_memory=start_long_memory or "(empty)",
-                previous_day_tweet=start_opinion or "(none)",
-                short_term_memory=stm,
-            )
+            user_cog = prompts.daily_cognitive.format(**cog_kwargs)
             user_ltm = prompts.daily_ltm_compress.format(max_words=ltm_words)
             ltm_user = (
-                f"Existing long-term memory:\n{start_long_memory}\n\n"
+                f"Existing long-term memory:\n{prior_ltm}\n\n"
                 f"Short-term peer observations:\n{stm}\n\n"
             )
 
@@ -278,14 +257,11 @@ class Citizen(mesa.Agent):
         self.beliefs.append(belief)
         self.reasonings.append(reasoning)
         self.long_term_memory = ltm
-        self.long_opinion_memory = ltm
-        self.long_memory_full.append(ltm)
 
         self.apply_sir_from_belief(belief)
         self._append_history(day, belief, tweet, reasoning, ltm)
 
         self.short_term_memory = ""
-        self.short_opinion_memory.clear()
         self.contact_ids = payload.get("contact_ids", [])
         self.agent_interaction.clear()
 
@@ -340,8 +316,6 @@ class Citizen(mesa.Agent):
         agent.beliefs = list(data.get("beliefs", []))
         agent.reasonings = list(data.get("reasonings", []))
         agent.long_term_memory = data.get("long_term_memory", "")
-        agent.long_opinion_memory = agent.long_term_memory
-        agent.long_memory_full = [agent.long_term_memory] if agent.long_term_memory else []
         if agent.opinions:
             agent.opinion = agent.opinions[-1]
         if agent.beliefs:
@@ -349,6 +323,3 @@ class Citizen(mesa.Agent):
         if agent.reasonings:
             agent.reasoning = agent.reasonings[-1]
         return agent
-
-    def step(self):
-        pass

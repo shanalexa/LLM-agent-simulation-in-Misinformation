@@ -6,20 +6,33 @@ day0_cognitive: |
   Read the following breaking news:
   {misinformation_text}
 
-  Based on your persona, analyze whether you believe this information. Provide your internal reasoning, and then compose a tweet expressing your opinion. Finally, rate your belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+  Based on your persona, analyze whether you believe this information. Provide your internal reasoning, rate your belief about the news claim you just read, using the following scale:
+  {belief_scale_definition}. Then compose a tweet expressing your opinion.
 
-  Output exactly in this JSON format, and nothing else:
+  CONSISTENCY RULE:
+  Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
+  - Rejecting or doubting the claim → 1, 2, or 3.
+  - Genuinely uncertain or neutral → 4.
+  - Accepting or leaning toward the claim → 5, 6, or 7.
+
+  Output exactly in this JSON format, and nothing else. (Order matters: provide your reasoning first, then your score, and finally your tweet):
   {{
-  "belief_score": <integer 1-7>,
-  "opinion": "<tweet>",
-  "reasoning": "<first-person internal monologue>"
+    "reasoning": "<first-person internal monologue>",
+    "belief_score": <integer 1-7>,
+    "opinion": "<tweet expressing your public stance>"
   }}
 
 day0_ltm_init: |
-  Summarize the news you received and your internal reasoning. Compress this summary into a concise long-term memory block of no more than {max_words} words to retain core beliefs while saving cognitive space. Return only the compressed long-term memory text, with no preamble.
+  You have just read the following news:
+  {misinformation_text}
+
+  Your internal reasoning was:
+  {day0_reasoning}
+
+  Compress these into a concise long-term memory block of no more than {max_words} words, retaining your core belief and the key reasons behind it. Return only the compressed long-term memory text, with no preamble.
 
 daily_stm: |
-  Summarize the following {contacts_per_day} opinions you have heard from other agents in a few sentences, explicitly including their belief score about the news.
+  Summarize the following {contacts_per_day} opinions you have heard from other agents in a few sentences, explicitly including each agent's belief score about the news.
 
   Peer records (tweet + belief_score):
   {peer_records}
@@ -34,18 +47,26 @@ daily_cognitive: |
   {long_term_memory}
 
   Yesterday, your public stance was:
-  {previous_day_tweet}
+  - Tweet: {previous_day_tweet}
+  - Belief score: {previous_day_belief_score}
 
-  Today, you observed the following from your peers (Short-Term Memory):
+  Today, you observed the following summary of your peers' views (short-term memory):
   {short_term_memory}
 
-  Reflect on your peers' opinions and update your stance. Provide your internal reasoning, compose a new tweet expressing your current opinion, and rate your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+  Reflect on your peers' opinions and update your stance. Provide your internal reasoning, rate your updated belief in the same news claim you first heard on Day 0, using the following scale:
+  {belief_scale_definition}. Then compose a tweet expressing your current opinion.
 
-  Output exactly in this JSON format, and nothing else:
+  CONSISTENCY RULE:
+  Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
+  - Rejecting or doubting the claim → 1, 2, or 3.
+  - Genuinely uncertain or neutral → 4.
+  - Accepting or leaning toward the claim → 5, 6, or 7.
+
+  Output exactly in this JSON format, and nothing else. (Order matters: provide your reasoning first, then your score, and finally your tweet):
   {{
-  "belief_score": <integer 1-7>,
-  "opinion": "<tweet>",
-  "reasoning": "<first-person internal monologue>"
+    "reasoning": "<first-person internal monologue>",
+    "belief_score": <integer 1-7>,
+    "opinion": "<tweet expressing your updated public stance>"
   }}
 
 daily_ltm_compress: |
@@ -59,21 +80,29 @@ intervention_cognitive: |
   {long_term_memory}
 
   Yesterday, your public stance was:
-  {previous_day_tweet}
+  - Tweet: {previous_day_tweet}
+  - Belief score: {previous_day_belief_score}
 
-  Today, you observed the following peer opinions:
+  Today, you observed the following summary of your peers' views (short-term memory):
   {short_term_memory}
 
-  BREAKING NEWS: The platform has just broadcasted the following official statement:
+  BREAKING NEWS: The platform has just broadcast the following official statement:
   {refutation_text}
 
-  Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, compose a new tweet, and output your updated belief on a 7-point Likert scale (1 = Strong Disbelief, 7 = Strong Belief).
+  Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, rate your updated belief in the same news claim you first heard on Day 0, using the following scale:
+  {belief_scale_definition}. Then compose a tweet expressing your current opinion.
 
-  Output exactly in this JSON format, and nothing else:
+  CONSISTENCY RULE:
+  Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
+  - Rejecting or doubting the claim → 1, 2, or 3.
+  - Genuinely uncertain or neutral → 4.
+  - Accepting or leaning toward the claim → 5, 6, or 7.
+
+  Output exactly in this JSON format, and nothing else. (Order matters: provide your reasoning first, then your score, and finally your tweet):
   {{
-  "belief_score": <integer 1-7>,
-  "opinion": "<tweet>",
-  "reasoning": "<first-person internal monologue>"
+    "reasoning": "<first-person internal monologue>",
+    "belief_score": <integer 1-7>,
+    "opinion": "<tweet expressing your updated public stance>"
   }}
 
 intervention_ltm_compress: |

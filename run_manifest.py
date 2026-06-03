@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import pickle
 import random
 import subprocess
 from argparse import Namespace
@@ -38,6 +40,24 @@ def git_commit_hash(repo_root: Optional[Path] = None) -> Optional[str]:
 def apply_random_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+def capture_rng_state() -> Dict[str, str]:
+    """Snapshot Python and NumPy RNG for branch-fork contact-network alignment."""
+    return {
+        "python_random": base64.b64encode(pickle.dumps(random.getstate())).decode("ascii"),
+        "numpy_random": base64.b64encode(pickle.dumps(np.random.get_state())).decode("ascii"),
+    }
+
+
+def restore_rng_state(rng_state: Dict[str, str]) -> None:
+    """Restore RNG saved at Day 7 checkpoint (each branch starts from the same contacts)."""
+    if not rng_state:
+        raise ValueError("rng_state is empty")
+    if "python_random" in rng_state:
+        random.setstate(pickle.loads(base64.b64decode(rng_state["python_random"])))
+    if "numpy_random" in rng_state:
+        np.random.set_state(pickle.loads(base64.b64decode(rng_state["numpy_random"])))
 
 
 def _read_text(path: Path) -> Optional[str]:

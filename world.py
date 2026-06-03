@@ -10,9 +10,9 @@ from tqdm import tqdm
 
 from citizen import Citizen
 from config import get_config
+from run_manifest import capture_rng_state, restore_rng_state
 from utils import (
     build_agents_config,
-    clear_cache,
     get_llm_config,
     ideology_level_from_name,
 )
@@ -76,8 +76,7 @@ class World(mesa.Model):
     def __init__(
         self,
         args,
-        initial_healthy=35,
-        initial_infected=0,
+        population=None,
         experiment_branch=None,
         checkpoint_agents=None,
         run_day0=True,
@@ -88,12 +87,9 @@ class World(mesa.Model):
         except TypeError:
             super().__init__()
 
-        self.initial_healthy = initial_healthy
-        self.initial_infected = initial_infected
-        self.population = initial_healthy + initial_infected
         cfg = get_config()
         exp = cfg.experiment
-        self.step_count = exp.simulation_days
+        self.population = int(population) if population is not None else exp.population_n
         self.offset = 0
         self.name = args.name
         self.experiment_branch = experiment_branch
@@ -104,11 +100,12 @@ class World(mesa.Model):
         self.total_contact_rates = 0
         self.track_contact_rate = [0]
         self.list_new_infected_cases = [0]
-        self.list_new_susceptible_cases = [0]
+        self.list_new_recovered_cases = [0]
         self.daily_new_infected_cases = 0
-        self.daily_new_susceptible_cases = 0
-        self.infected = 0
+        self.daily_new_recovered_cases = 0
         self.susceptible = 0
+        self.infected = 0
+        self.recovered = 0
         self.current_date = datetime(y, m, d)
         self.contact_rate = exp.contacts_per_day
         self.belief_infected_threshold = int(getattr(args, "belief_threshold", exp.belief_threshold))
@@ -140,6 +137,8 @@ class World(mesa.Model):
         if checkpoint_agents is not None:
             self._init_agents_from_checkpoint(checkpoint_agents)
             self.simulation_day = exp.checkpoint_day
+            # Phase1 run_model advances current_date once per day 1..checkpoint_day.
+            self.current_date += timedelta(days=exp.checkpoint_day)
             self._sync_population_counts()
         else:
             self._init_agents_fresh()
@@ -148,7 +147,7 @@ class World(mesa.Model):
                 self.datacollector.collect(self)
                 self._sync_population_counts()
                 self.list_new_infected_cases[0] = self.daily_new_infected_cases
-                self.list_new_susceptible_cases[0] = self.daily_new_susceptible_cases
+                self.list_new_recovered_cases[0] = self.daily_new_recovered_cases
 
     def _init_agents_fresh(self):
         agent_id = 0
@@ -210,12 +209,17 @@ class World(mesa.Model):
         self._parallel_for_agents(agents, _run, label="Day 0 broadcast")
 
     def _sync_population_counts(self):
+        """Recount S/I/R from agent states (source of truth after each day)."""
         self.susceptible = sum(
             1 for a in self.schedule.agents if a.health_condition == "Susceptible"
         )
         self.infected = sum(1 for a in self.schedule.agents if a.health_condition == "Infected")
-        self.initial_healthy = self.susceptible
-        self.initial_infected = self.infected
+        self.recovered = sum(1 for a in self.schedule.agents if a.health_condition == "Recovered")
+        total = self.susceptible + self.infected + self.recovered
+        if total != self.population:
+            raise ValueError(
+                f"SIR compartment counts sum to {total}, expected {self.population}."
+            )
 
     def decide_agent_interactions(self):
         k = min(self.contact_rate, max(0, len(self.schedule.agents) - 1))
@@ -275,6 +279,7 @@ class World(mesa.Model):
             payload = a.compute_daily_update(
                 day=day,
                 start_opinion=s["opinion"],
+                start_belief=s["belief"],
                 start_long_memory=s["long_memory"],
                 peer_opinion_beliefs=peer_opinion_beliefs,
                 contact_ids=contact_ids,
@@ -297,10 +302,13 @@ class World(mesa.Model):
         for a, payload in pending:
             a.apply_daily_update(payload)
 
+        self._sync_population_counts()
+
     def export_checkpoint_day7(self, path: str):
         payload = {
             "checkpoint_day": get_config().experiment.checkpoint_day,
             "misinformation_text": self.topic,
+            "rng_state": capture_rng_state(),
             "agents": [
                 a.to_checkpoint_dict()
                 for a in sorted(self.schedule.agents, key=lambda x: x.unique_id)
@@ -324,10 +332,17 @@ class World(mesa.Model):
         )
         if not getattr(args, "rumor_topic", None):
             args.rumor_topic = topic
+        rng_state = data.get("rng_state")
+        if not rng_state:
+            raise ValueError(
+                f"Checkpoint missing rng_state: {json_path}. "
+                "Re-run phase1 to generate a new checkpoint."
+            )
+        restore_rng_state(rng_state)
+        print(f"  Restored RNG state from checkpoint (branch={experiment_branch})")
         world = cls(
             args,
-            initial_healthy=len(data["agents"]),
-            initial_infected=0,
+            population=len(data["agents"]),
             experiment_branch=experiment_branch,
             checkpoint_agents=data["agents"],
             run_day0=False,
@@ -360,19 +375,29 @@ class World(mesa.Model):
         for day in tqdm(range(start_day, end_day + 1)):
             self.time = float(day)
             self.daily_new_infected_cases = 0
-            self.daily_new_susceptible_cases = 0
+            self.daily_new_recovered_cases = 0
 
             self.step_day(day)
             self.datacollector.collect(self)
 
             self.list_new_infected_cases.append(self.daily_new_infected_cases)
-            self.list_new_susceptible_cases.append(self.daily_new_susceptible_cases)
+            self.list_new_recovered_cases.append(self.daily_new_recovered_cases)
 
             print(f"Day {day} ({self.current_date.date()}) branch={self.experiment_branch}")
-            print(f"  Infected={self.infected} Susceptible={self.susceptible}")
+            print(
+                f"  Susceptible={self.susceptible} Infected={self.infected} "
+                f"Recovered={self.recovered} (total={self.population})"
+            )
+            if self.daily_new_infected_cases or self.daily_new_recovered_cases:
+                print(
+                    f"  New today: infected={self.daily_new_infected_cases} "
+                    f"recovered={self.daily_new_recovered_cases}"
+                )
 
             if day == exp.checkpoint_day and not self.experiment_branch:
-                ckpt = os.path.join(export_dir, "checkpoint_day7.json")
+                from config import checkpoint_day7_path_for_run
+
+                ckpt = str(checkpoint_day7_path_for_run(export_dir))
                 self.export_checkpoint_day7(ckpt)
                 print(f"  Saved {ckpt}")
 
@@ -387,7 +412,6 @@ class World(mesa.Model):
             if checkpoint_path and get_config().world.save_daily_pickle:
                 path = f"{checkpoint_path}/{self.name}-{day}.pkl"
                 self.save_checkpoint(file_path=path)
-            clear_cache()
 
     def save_checkpoint(self, file_path):
         with open(file_path, "wb") as file:

@@ -2,9 +2,7 @@ import random
 import re
 import time
 import os
-import shutil
 import json
-import importlib
 
 def _agent_id(ideology: str, archetype_id: str) -> str:
     return f"{ideology.replace(' ', '_')}_{archetype_id}"
@@ -89,144 +87,6 @@ def export_agents_config(output_path: str | None = None):
         json.dump(agents, f, indent=2, ensure_ascii=False)
     return agents
 
-# Persona: 5 education levels × 5 age brackets, orthogonal shuffle within each ideology stratum.
-PERSONA_EDUCATION_LEVELS = (
-    "High School",
-    "Associate's",
-    "Bachelor's",
-    "Master's",
-    "PhD",
-)
-
-# (label, min_age, max_age) — one slot per stratum after shuffling brackets.
-PERSONA_AGE_BRACKETS = (
-    ("Young adult (18–25)", 18, 25),
-    ("Young midlife (26–35)", 26, 35),
-    ("Midlife (36–45)", 36, 45),
-    ("Older midlife (46–55)", 46, 55),
-    ("Senior (56–65)", 56, 65),
-)
-
-def allocate_equal_ideology_levels(n: int):
-    """
-    Return a shuffled list of length n with political ideology levels 1..7,
-    as evenly distributed as possible (for IBG / moderation analyses).
-    """
-    if n <= 0:
-        return []
-    base = n // 7
-    rem = n % 7
-    levels = []
-    for k in range(1, 8):
-        count = base + (1 if k <= rem else 0)
-        levels.extend([k] * count)
-    random.shuffle(levels)
-    return levels
-
-
-def build_personas_stratified_orthogonal(rng=None):
-    """
-    Stratified orthogonal assignment (35 agents, 5 per ideology 1..7).
-
-    Within each ideology stratum: all 5 education levels and all 5 age brackets appear
-    exactly once. Education order and age-bracket order are shuffled independently,
-    then paired by index so age and education are marginally balanced but not collinear
-    (e.g. PhD is not tied to a fixed age band).
-    """
-    rnd = rng or random
-    personas = []
-    edu_template = list(PERSONA_EDUCATION_LEVELS)
-    bracket_template = list(PERSONA_AGE_BRACKETS)
-    from config import get_config
-
-    per_level = get_config().experiment.agents_per_ideology
-    if len(edu_template) != per_level:
-        raise ValueError("PERSONA_EDUCATION_LEVELS must match experiment.agents_per_ideology.")
-    if len(bracket_template) != per_level:
-        raise ValueError("PERSONA_AGE_BRACKETS must match experiment.agents_per_ideology.")
-
-    for ideology in range(1, 8):
-        edu_order = edu_template[:]
-        rnd.shuffle(edu_order)
-        bracket_order = bracket_template[:]
-        rnd.shuffle(bracket_order)
-        for j in range(per_level):
-            _label, lo, hi = bracket_order[j]
-            personas.append(
-                {
-                    "political_ideology": ideology,
-                    "age": rnd.randint(lo, hi),
-                    "qualification": edu_order[j],
-                }
-            )
-    rnd.shuffle(personas)
-    return personas
-
-
-def probability_threshold(threshold):
-    '''
-    Used in self.infect_interaction()
-    '''
-    import numpy as np
-
-    #Generates random number from 0 to 1
-    
-    return (np.random.rand()<threshold)
-
-def generate_qualifications(n: int):
-    '''
-    Returns a list of random educational qualifications.
-
-    Parameters:
-    n (int): The number of qualifications to generate.
-    '''
-
-    generated_qualifications = random.choices(list(PERSONA_EDUCATION_LEVELS), k=n)
-
-    return generated_qualifications
-
-
-def generate_names(n: int, s: int, country_alpha2='US'):
-    '''
-    Returns random names as names for agents from top names in the USA
-    Used in World.init to initialize agents
-    '''
-    try:
-        NameDataset = importlib.import_module("names_dataset").NameDataset
-    except ModuleNotFoundError:
-        fallback_names = [f"Agent_{i + 1}" for i in range(n)]
-        random.shuffle(fallback_names)
-        return fallback_names
-
-    # This function will randomly selct n names (n/2 male and n/2 female) without
-    # replacement from the s most popular names in the country defined by country_alpha2
-    if n % 2 == 1:
-        n += 1
-    if s % 2 == 1:
-        s += 1
-
-    nd = NameDataset()
-    male_names = nd.get_top_names(s//2, 'Male', country_alpha2)[country_alpha2]['M']
-    female_names = nd.get_top_names(s//2, 'Female', country_alpha2)[country_alpha2]['F']
-    if s < n:
-        raise ValueError(f"Cannot generate {n} unique names from a list of {s} names.")
-    # generate names without repetition
-    names = random.sample(male_names, k=n//2) + random.sample(female_names, k=n//2)
-    del male_names
-    del female_names
-    random.shuffle(names)
-    return names
-
-
-def factorize(n):
-    '''
-    Factorize number for ideal grid dimensions for # of agents
-    Used in World.init
-    '''
-    for i in range(int(n**0.5), 1, -1):
-        if n % i == 0:
-            return (i, n // i)
-    return (n, 1)
 
 # Runtime LLM client state (filled by configure_llm from config + env/CLI overrides).
 _LLM: dict = {}
@@ -281,6 +141,7 @@ def configure_llm(
     _LLM["enable_thinking"] = c.enable_thinking
     _LLM["use_json_mode"] = use_json_mode if use_json_mode is not None else c.use_json_mode
     _LLM["max_retries"] = max_retries if max_retries is not None else c.max_retries
+    _LLM["max_cognitive_retries"] = c.max_cognitive_retries
     if max_workers is not None:
         _LLM["max_workers"] = max(1, int(max_workers))
     elif os.environ.get("LLM_MAX_WORKERS"):
@@ -355,6 +216,55 @@ def parse_json_safely(model_output: str) -> dict:
     preview = text[:800]
     print(f"JSON解析彻底失败！原始输出是: {preview!r}")
     raise ValueError("文本中未找到任何大括号结构")
+
+
+def validate_cognitive_payload(data: object) -> dict:
+    """
+    Validate LLM cognitive JSON (belief_score, opinion/tweet, reasoning).
+    Raises ValueError so get_completion_from_messages_json can retry the API call.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("Cognitive output must be a JSON object")
+
+    belief_raw = data.get("belief_score", data.get("belief"))
+    if belief_raw is None:
+        raise ValueError("Missing belief_score or belief")
+    try:
+        belief = int(round(float(belief_raw)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid belief_score: {belief_raw!r}") from exc
+
+    from config import get_config
+
+    exp = get_config().experiment
+    belief = max(exp.belief_min, min(exp.belief_max, belief))
+
+    opinion = data.get("opinion")
+    tweet = data.get("tweet")
+    public_text = ""
+    if isinstance(opinion, str) and opinion.strip():
+        public_text = opinion.strip()
+    elif isinstance(tweet, str) and tweet.strip():
+        public_text = tweet.strip()
+    elif opinion is not None and not isinstance(opinion, str):
+        public_text = str(opinion).strip()
+    elif tweet is not None and not isinstance(tweet, str):
+        public_text = str(tweet).strip()
+    if not public_text:
+        raise ValueError("Missing non-empty opinion or tweet")
+
+    reasoning = data.get("reasoning", "")
+    if not isinstance(reasoning, str):
+        reasoning = str(reasoning) if reasoning is not None else ""
+    reasoning = reasoning.strip()
+    if not reasoning:
+        raise ValueError("Missing reasoning")
+
+    return {
+        "reasoning": reasoning,
+        "belief_score": belief,
+        "opinion": public_text,
+    }
 
 
 def _qwen_thinking_extra_body(model: str) -> dict | None:
@@ -483,38 +393,63 @@ def get_completion_from_messages(messages, model=None, temperature=0):
     )
 
 
+def _fetch_chat_content_once(messages, model, temperature, json_mode=False) -> str:
+    """One API round-trip; retry json_mode=False once if the server rejects JSON mode."""
+    try:
+        response = _chat_create(messages, model, temperature, json_mode=json_mode)
+        return _message_content(response)
+    except Exception:
+        if json_mode:
+            response = _chat_create(messages, model, temperature, json_mode=False)
+            return _message_content(response)
+        raise
+
+
 def get_completion_from_messages_json(messages, model=None, temperature=0):
+    """
+    Cognitive JSON: single retry loop (API + parse + validate share one budget).
+    """
+    from config import get_config
+
     model = _require_llm_model(model)
     use_json = _LLM["use_json_mode"]
-    max_retries = _LLM.get("max_retries") or 30
+    llm = get_config().llm
+    max_attempts = _LLM.get("max_cognitive_retries") or llm.max_cognitive_retries or 8
     last_err = None
     last_content = ""
-    for attempt in range(max_retries):
-        content = _chat_with_retries(messages, model, temperature, json_mode=use_json)
+
+    for attempt in range(max_attempts):
+        try:
+            content = _fetch_chat_content_once(
+                messages, model, temperature, json_mode=use_json
+            )
+        except Exception as exc:
+            last_err = exc
+            print(
+                f"LLM API error (cognitive attempt {attempt + 1}/{max_attempts}): {exc}"
+            )
+            time.sleep(
+                min(llm.retry_sleep_cap, llm.retry_sleep_base * (attempt + 1))
+            )
+            continue
+
         last_content = content or ""
         try:
             parsed = parse_json_safely(content)
-            return json.dumps(parsed, ensure_ascii=False)
+            validated = validate_cognitive_payload(parsed)
+            return json.dumps(validated, ensure_ascii=False)
         except ValueError as exc:
             last_err = exc
-            from config import get_config
-
-            llm = get_config().llm
             preview = (last_content or "(empty)")[:500]
             print(
-                f"JSON parse error (attempt {attempt + 1}/{max_retries}): {exc}; "
+                f"JSON/cognitive validation error (attempt {attempt + 1}/{max_attempts}): {exc}; "
                 f"output preview: {preview!r}"
             )
             time.sleep(
                 min(llm.retry_sleep_cap, llm.retry_sleep_base * (attempt + 1))
             )
+
     raise RuntimeError(
-        f"Could not parse JSON from model after {max_retries} attempts: {last_err}; "
+        f"Could not obtain valid cognitive JSON after {max_attempts} attempts: {last_err}; "
         f"last output: {(last_content or '(empty)')[:500]!r}"
     )
-
-
-
-def clear_cache():
-    if os.path.exists("__pycache__"):
-        shutil.rmtree("__pycache__")

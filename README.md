@@ -125,7 +125,7 @@ python main.py --phase full --name MGS --llm_workers 8 --no_json_mode --no_daily
 
 ```bash
 python main.py --phase phase2 \
-  --checkpoint_day7 output/run-1/checkpoint_day7.json \
+  # Day 7 checkpoint defaults to output/run-1/checkpoint_day7.json \
   --llm_workers 8 --no_json_mode --no_daily_pickle
 ```
 
@@ -133,7 +133,7 @@ python main.py --phase phase2 \
 
 ```bash
 python main.py --phase branch --branch NYT \
-  --checkpoint_day7 output/run-1/checkpoint_day7.json \
+  # Day 7 checkpoint defaults to output/run-1/checkpoint_day7.json \
   --no_json_mode --no_daily_pickle
 ```
 

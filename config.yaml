@@ -7,6 +7,14 @@ experiment:
   belief_threshold: 5
   belief_min: 1
   belief_max: 7
+  belief_scale_definition: |
+    1 = Strongly disbelieve (certain this is false or fabricated)
+    2 = Disbelieve (probably false)
+    3 = Slightly disbelieve (lean toward doubting)
+    4 = Uncertain (genuinely cannot tell)
+    5 = Slightly believe (lean toward accepting as probably true)
+    6 = Believe (probably true)
+    7 = Strongly believe (certain this is credible and accurate)
   ltm_max_words: 300
   branches:
   - NYT
@@ -28,10 +36,11 @@ paths:
   prompts: prompts.yaml
   output_dir: output
   checkpoint_dir: checkpoint
-  checkpoint_day7: output/checkpoint_day7.json
+  checkpoint_day7: checkpoint_day7.json
 llm:
   model: Qwen2.5-32B-Instruct
   max_retries: 30
+  max_cognitive_retries: 8
   max_workers: 8
   max_tokens: 2048
   enable_thinking: false  # Qwen3 only; ignored for Qwen2.5

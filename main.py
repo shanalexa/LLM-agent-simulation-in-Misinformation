@@ -3,7 +3,14 @@ import os
 
 import pandas as pd
 
-from config import get_config, get_config_path, get_personas_path, get_prompts_path, init_config
+from config import (
+    get_config,
+    get_config_path,
+    get_personas_path,
+    get_prompts_path,
+    init_config,
+    resolve_checkpoint_day7_path,
+)
 from run_manifest import (
     apply_random_seed,
     create_run_manifest,
@@ -34,7 +41,6 @@ def _build_parser(cfg):
         type=int,
         help="Agent count (must match experiment.population_n in config).",
     )
-    parser.add_argument("--no_init_infect", default=0, type=int, help="Deprecated; Day 0 uses LLM + threshold.")
     parser.add_argument("--no_of_runs", default=1, type=int, help="Number of independent run folders.")
     parser.add_argument("--offset", default=0, type=int, help="Resume daily steps from this day index (1–15).")
     parser.add_argument("--load_from_run", default=0, type=int, help="Run folder index for pickle resume.")
@@ -59,8 +65,11 @@ def _build_parser(cfg):
     )
     parser.add_argument(
         "--checkpoint_day7",
-        default=cfg.paths.checkpoint_day7,
-        help="Path to Day 7 JSON checkpoint for phase2.",
+        default=None,
+        help=(
+            "Day 7 JSON checkpoint (default: <output_dir>/run-N/"
+            f"{cfg.paths.checkpoint_day7})."
+        ),
     )
     parser.add_argument("--llm_model", default=None, help="Override config llm.model / env LLM_MODEL.")
     parser.add_argument("--vllm_api_base", default=None, help="Override env VLLM_API_BASE.")
@@ -81,20 +90,18 @@ def _build_parser(cfg):
 
 
 def _run_single_iteration(args, cfg, checkpoint_path, output_path, run_branch):
-    ckpt_day7 = os.path.join(output_path, "checkpoint_day7.json")
-    if args.checkpoint_day7 and not os.path.isabs(args.checkpoint_day7):
-        if not os.path.exists(args.checkpoint_day7) and os.path.exists(ckpt_day7):
-            args.checkpoint_day7 = ckpt_day7
+    ckpt_day7 = str(resolve_checkpoint_day7_path(args.checkpoint_day7, output_path, cfg))
+    args.checkpoint_day7 = ckpt_day7
 
     if args.phase in ("phase2", "branch"):
-        if not os.path.exists(args.checkpoint_day7):
+        if not os.path.isfile(ckpt_day7):
             raise FileNotFoundError(
-                f"Day 7 checkpoint not found: {args.checkpoint_day7}. Run --phase phase1 first."
+                f"Day 7 checkpoint not found: {ckpt_day7}. Run --phase phase1 first."
             )
         branches = [args.branch] if args.phase == "branch" else list(cfg.experiment.branches)
         for branch in branches:
             print(f"=== Branch {branch} (Day 8–15) ===")
-            model = World.from_checkpoint_day7(args, args.checkpoint_day7, experiment_branch=branch)
+            model = World.from_checkpoint_day7(args, ckpt_day7, experiment_branch=branch)
             model.name = f"{args.name}_{branch}"
             run_branch(
                 model,
@@ -110,17 +117,9 @@ def _run_single_iteration(args, cfg, checkpoint_path, output_path, run_branch):
         if os.path.exists(checkpoint_file):
             model = World.load_checkpoint(checkpoint_file)
         else:
-            model = World(
-                args,
-                initial_healthy=args.no_init_healthy,
-                initial_infected=args.no_init_infect,
-            )
+            model = World(args, population=args.no_init_healthy)
     else:
-        model = World(
-            args,
-            initial_healthy=args.no_init_healthy,
-            initial_infected=args.no_init_infect,
-        )
+        model = World(args, population=args.no_init_healthy)
 
     exp = cfg.experiment
     phase1_end = exp.checkpoint_day if args.phase in ("phase1", "full") else exp.simulation_days
@@ -133,12 +132,11 @@ def _run_single_iteration(args, cfg, checkpoint_path, output_path, run_branch):
     )
 
     if args.phase == "phase1":
-        model.export_checkpoint_day7(ckpt_day7)
         print(f"Phase 1 complete. Checkpoint: {ckpt_day7}")
         return
 
     if args.phase == "full":
-        if not os.path.exists(ckpt_day7):
+        if not os.path.isfile(ckpt_day7):
             model.export_checkpoint_day7(ckpt_day7)
         print(f"Phase 1 complete. Checkpoint: {ckpt_day7}")
         for branch in exp.branches:
