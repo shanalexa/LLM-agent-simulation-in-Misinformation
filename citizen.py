@@ -203,6 +203,7 @@ class Citizen(mesa.Agent):
             previous_day_tweet=start_opinion or "(none)",
             previous_day_belief_score=int(start_belief),
             short_term_memory=stm,
+            misinformation_text=self.topic,
             belief_scale_definition=cfg.experiment.belief_scale_definition,
         )
         if refutation_text:

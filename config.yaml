@@ -50,7 +50,7 @@ llm:
   temperature_day0_cognitive: 0.65
   temperature_stm: 0.5
   temperature_ltm: 0.5
-  temperature_daily_cognitive: 1.0
+  temperature_daily_cognitive: 0.65
 run:
   default_name: MGS
   default_phase: full

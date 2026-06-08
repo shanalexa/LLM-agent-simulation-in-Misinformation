@@ -6,14 +6,14 @@ day0_cognitive: |
   Read the following breaking news:
   {misinformation_text}
 
-  Based on your persona, analyze whether you believe this information. Provide your internal reasoning, rate your belief about the news claim you just read, using the following scale:
+  Based on your persona, analyze whether you believe this news claim. Provide your internal reasoning, rate your belief about the news claim you just read, using the following scale:
   {belief_scale_definition}. Then compose a tweet expressing your opinion.
 
   CONSISTENCY RULE:
   Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
-  - Rejecting or doubting the claim → 1, 2, or 3.
+  - Rejecting or doubting the news claim → 1, 2, or 3.
   - Genuinely uncertain or neutral → 4.
-  - Accepting or leaning toward the claim → 5, 6, or 7.
+  - Accepting or leaning toward the news claim → 5, 6, or 7.
 
   Output exactly in this JSON format, and nothing else. (Order matters: provide your reasoning first, then your score, and finally your tweet):
   {{
@@ -48,13 +48,24 @@ daily_cognitive: |
 
   Yesterday, your public stance was:
   - Tweet: {previous_day_tweet}
-  - Belief score: {previous_day_belief_score}
+  - Belief score: {previous_day_belief_score} (your belief about the Claim below yesterday)
 
-  Today, you observed the following summary of your peers' views (short-term memory):
+  Today, you observed the following summary of your peers' opinions:
   {short_term_memory}
 
-  Reflect on your peers' opinions and update your stance. Provide your internal reasoning, rate your updated belief in the same news claim you first heard on Day 0, using the following scale:
-  {belief_scale_definition}. Then compose a tweet expressing your current opinion.
+  Your persona, long-term memory, and yesterday's stance form your internal foundation — the stable core from which you engage with the world. Your peers' opinions are external information you viewed today. Reflect on them through that foundation. You may update your stance when external information convinces you.
+
+  Provide your internal reasoning, then rate your updated belief in the following specific claim using the scale below:
+
+  Claim: {misinformation_text}
+
+  Scale: {belief_scale_definition}
+
+  Your belief_score reflects ONLY whether you believe this specific claim is factually accurate — NOT your confidence in general, NOT agreement with peers, NOT certainty about immigration policy broadly.
+
+  Do not copy your peers' belief scores. Set your score from your reasoning about the Claim.
+
+  Then compose a tweet expressing your current opinion.
 
   CONSISTENCY RULE:
   Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
@@ -70,7 +81,7 @@ daily_cognitive: |
   }}
 
 daily_ltm_compress: |
-  Review your existing long-term memory, today's short-term peer observations, and your new internal reasoning. Integrate these into a single, updated narrative. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.
+  Review your existing long-term memory, today's short-term memory of peer opinions, and your new internal reasoning. Integrate these into a single, updated narrative. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.
 
 intervention_cognitive: |
   You are simulating a real person with the following persona:
@@ -81,16 +92,27 @@ intervention_cognitive: |
 
   Yesterday, your public stance was:
   - Tweet: {previous_day_tweet}
-  - Belief score: {previous_day_belief_score}
+  - Belief score: {previous_day_belief_score} (your belief about the Claim below yesterday)
 
-  Today, you observed the following summary of your peers' views (short-term memory):
+  Today, you observed the following summary of your peers' opinions:
   {short_term_memory}
 
-  BREAKING NEWS: The platform has just broadcast the following official statement:
+  Official statement: The platform has just broadcast the following official statement:
   {refutation_text}
 
-  Reflect on how this official statement, combined with peer opinions, affects your view. Provide your internal reasoning, rate your updated belief in the same news claim you first heard on Day 0, using the following scale:
-  {belief_scale_definition}. Then compose a tweet expressing your current opinion.
+  Your persona, long-term memory, and yesterday's stance form your internal foundation — the stable core from which you engage with the world. Your peers' opinions and today's official statement are external information you viewed today. Reflect on them through that foundation. You may update your stance when external information convinces you.
+
+  Provide your internal reasoning, then rate your updated belief in the following specific claim using the scale below:
+
+  Claim: {misinformation_text}
+
+  Scale: {belief_scale_definition}
+
+  Your belief_score reflects ONLY whether you believe this specific claim is factually accurate — NOT your confidence in general, NOT agreement with peers or the official statement, NOT certainty about immigration policy broadly.
+
+  Do not copy your peers' belief scores. Set your score from your reasoning about the Claim.
+
+  Then compose a tweet expressing your current opinion.
 
   CONSISTENCY RULE:
   Your `belief_score` must logically match your `reasoning` and `opinion` (tweet).
@@ -106,4 +128,4 @@ intervention_cognitive: |
   }}
 
 intervention_ltm_compress: |
-  Review your existing long-term memory, today's short-term peer observations, the breaking news refutation, and your new internal reasoning. Integrate these inputs into a single, coherent narrative that reflects your current worldview. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.
+  Review your existing long-term memory, today's short-term memory of peer opinions, the official statement, and your new internal reasoning. Integrate these inputs into a single, coherent narrative that reflects your current worldview. Crucially, compress the final text to be no longer than {max_words} words, maintaining continuity, retaining key attitude shifts, and discarding redundant details. Return only the compressed long-term memory text.

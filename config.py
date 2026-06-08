@@ -99,7 +99,7 @@ class LLMConfig:
     temperature_day0_cognitive: float = 0.65
     temperature_stm: float = 0.5
     temperature_ltm: float = 0.5
-    temperature_daily_cognitive: float = 1.0
+    temperature_daily_cognitive: float = 0.65
 
 
 @dataclass
